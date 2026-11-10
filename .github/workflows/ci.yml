@@ -1,0 +1,64 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: supabase/setup-cli@v3
+        with:
+          version: 3.1.0
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Static checks (Edge Function)
+        working-directory: supabase/functions/invite-member
+        run: deno task check
+
+      - name: Unit tests (Edge Function)
+        working-directory: supabase/functions/invite-member
+        run: deno test --allow-env
+
+      - name: Start local stack
+        run: supabase start -x studio,imgproxy,logflare,vector,supavisor,storage-api,realtime,postgres-meta,mailpit
+
+      - name: Database lint and advisors
+        run: |
+          supabase db lint --level warning --fail-on warning
+          supabase db advisors
+
+      - name: Database tests (pgTAP)
+        run: supabase test db
+
+      - name: Concurrency and config tests
+        run: |
+          eval "$(supabase status -o env | sed 's/^/export /')"
+          cd supabase/tests/deno
+          deno lint && deno fmt --check
+          DB_URL="$DB_URL" deno task test
+
+      - name: Integration test (function + RLS end to end)
+        run: |
+          supabase functions serve --env-file supabase/functions/.env.example > serve.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf -o /dev/null -X OPTIONS "http://127.0.0.1:54321/functions/v1/invite-member" && break
+            sleep 2
+          done
+          eval "$(supabase status -o env | sed 's/^/export /')"
+          cd supabase/functions/invite-member
+          SUPABASE_URL="$API_URL" SUPABASE_ANON_KEY="$ANON_KEY" \
+          SUPABASE_SERVICE_ROLE_KEY="$SERVICE_ROLE_KEY" \
+            deno test --allow-env --allow-net=127.0.0.1 integration.test.ts
+
+      - name: Function logs
+        if: failure()
+        run: cat serve.log || true
