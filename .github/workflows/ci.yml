@@ -46,18 +46,17 @@ jobs:
           deno lint && deno fmt --check
           DB_URL="$DB_URL" deno task test
 
-      - name: Integration test (function + RLS end to end)
+      - name: PL/pgSQL coverage (100% statements and branches)
+        run: scripts/plpgsql-coverage.sh 100
+
+      - name: Edge Function tests with coverage (unit, adapters, end to end; 100%)
         run: |
           supabase functions serve --env-file supabase/functions/.env.example > serve.log 2>&1 &
           for i in $(seq 1 30); do
             curl -sf -o /dev/null -X OPTIONS "http://127.0.0.1:54321/functions/v1/invite-member" && break
             sleep 2
           done
-          eval "$(supabase status -o env | sed 's/^/export /')"
-          cd supabase/functions/invite-member
-          SUPABASE_URL="$API_URL" SUPABASE_ANON_KEY="$ANON_KEY" \
-          SUPABASE_SERVICE_ROLE_KEY="$SERVICE_ROLE_KEY" \
-            deno test --allow-env --allow-net=127.0.0.1 integration.test.ts
+          scripts/ts-coverage.sh
 
       - name: Function logs
         if: failure()

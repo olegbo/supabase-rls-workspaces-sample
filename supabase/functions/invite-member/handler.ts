@@ -82,7 +82,7 @@ export function createHandler(deps: Deps): (req: Request) => Promise<Response> {
   const fail = (status: number, code: string, message: string): Response =>
     reply(status, { data: null, error: { code, message } });
 
-  return async (req) => {
+  const handle = async (req: Request): Promise<Response> => {
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
     if (req.method !== 'POST') return fail(405, 'method_not_allowed', 'Use POST');
 
@@ -150,5 +150,16 @@ export function createHandler(deps: Deps): (req: Request) => Promise<Response> {
       },
       error: null,
     });
+  };
+
+  // Network or driver failures (as opposed to database errors returned as results) must
+  // still produce a JSON error with CORS headers, never an unhandled rejection.
+  return async (req) => {
+    try {
+      return await handle(req);
+    } catch (err) {
+      deps.log('unhandled_error', { error: String(err) });
+      return fail(500, 'internal', 'Something went wrong');
+    }
   };
 }

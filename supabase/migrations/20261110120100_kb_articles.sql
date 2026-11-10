@@ -29,6 +29,8 @@ begin
 end
 $$;
 
+revoke all on function private.touch_updated_at from public;
+
 create trigger kb_articles_touch_updated_at
   before update on public.kb_articles
   for each row execute function private.touch_updated_at();

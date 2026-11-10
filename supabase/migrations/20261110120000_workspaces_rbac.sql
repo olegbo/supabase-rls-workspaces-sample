@@ -205,6 +205,9 @@ begin
 end
 $$;
 
+-- Functions are executable by PUBLIC by default; trigger functions need no grant.
+revoke all on function private.ensure_workspace_has_owner from public;
+
 create trigger workspace_members_keep_owner
   before update of role or delete on public.workspace_members
   for each row execute function private.ensure_workspace_has_owner();
@@ -250,6 +253,9 @@ begin
   return old;
 end
 $$;
+
+-- Functions are executable by PUBLIC by default; trigger functions need no grant.
+revoke all on function private.hand_over_owned_workspaces from public;
 
 create trigger on_auth_user_deleted_hand_over_workspaces
   before delete on auth.users
@@ -329,6 +335,9 @@ begin
   return new;
 end
 $$;
+
+-- Functions are executable by PUBLIC by default; trigger functions need no grant.
+revoke all on function private.before_invite_insert from public;
 
 create trigger workspace_invites_before_insert
   before insert on public.workspace_invites
