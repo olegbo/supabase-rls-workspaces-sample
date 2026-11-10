@@ -15,13 +15,19 @@ function setup(opts: {
   userId?: string | null;
   insert?: InsertResult;
   mail?: 'sent' | 'disabled' | 'throws';
+  storeThrows?: 'auth' | 'insert';
+  token?: string;
 } = {}) {
   const rec: Recorded = { inserted: [], emails: [], logs: [], logFields: [], jwts: [] };
   const deps: Deps = {
     storeFor: (jwt) => (rec.jwts.push(jwt), {
-      currentUserId: () => Promise.resolve(opts.userId === undefined ? 'user-1' : opts.userId),
+      currentUserId: () =>
+        opts.storeThrows === 'auth'
+          ? Promise.reject(new Error('auth server unreachable'))
+          : Promise.resolve(opts.userId === undefined ? 'user-1' : opts.userId),
       insertInvite: (row) => {
         rec.inserted.push(row);
+        if (opts.storeThrows === 'insert') return Promise.reject(new Error('socket hang up'));
         return Promise.resolve(
           opts.insert ?? { ok: true, id: 'invite-1', expiresAt: '2026-11-17T00:00:00Z' },
         );
@@ -32,7 +38,7 @@ function setup(opts: {
       if (opts.mail === 'throws') return Promise.reject(new Error('smtp down'));
       return Promise.resolve(opts.mail !== 'disabled');
     },
-    newToken: () => 'fixed-token',
+    newToken: () => opts.token ?? 'fixed-token',
     appUrl: 'https://app.example.test',
     allowedOrigin: 'https://app.example.test',
     log: (event, fields) => {
@@ -204,4 +210,105 @@ Deno.test('sha256Hex matches the database digest format', async () => {
     await sha256Hex('abc'),
     'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
   );
+});
+
+// --- Edge cases ----------------------------------------------------------------
+
+Deno.test('a request without an Authorization header is rejected', async () => {
+  const { handler, rec } = setup();
+  const res = await handler(
+    new Request('http://localhost/invite-member', { method: 'POST', body: '{}' }),
+  );
+  assertEquals(res.status, 401);
+  assertEquals(rec.jwts.length, 0);
+});
+
+Deno.test('malformed Authorization headers are rejected before the store is used', async () => {
+  for (const header of ['Bearer', 'Bearer ', 'Basic dXNlcjpwYXNz', 'Bearer a b', 'Token abc']) {
+    const { handler, rec } = setup();
+    const res = await handler(post(validBody, { Authorization: header }));
+    assertEquals(res.status, 401, header);
+    assertEquals(rec.jwts.length, 0, header);
+  }
+});
+
+Deno.test('every response carries CORS headers, errors included', async () => {
+  const { handler } = setup({ userId: null });
+  const preflight = await handler(new Request('http://localhost', { method: 'OPTIONS' }));
+  assertEquals(
+    preflight.headers.get('Access-Control-Allow-Headers'),
+    'authorization, x-client-info, apikey, content-type',
+  );
+  assertEquals(preflight.headers.get('Access-Control-Allow-Methods'), 'POST, OPTIONS');
+  const denied = await handler(post(validBody));
+  assertEquals(denied.status, 401);
+  assertEquals(denied.headers.get('Access-Control-Allow-Origin'), 'https://app.example.test');
+  assertEquals(denied.headers.get('Content-Type'), 'application/json');
+});
+
+Deno.test('empty and non-object JSON bodies are rejected', async () => {
+  const { handler } = setup();
+  assertEquals((await (await handler(post(''))).json()).error.code, 'invalid_json');
+  for (const body of ['null', '[]', '"text"', '42', '{}']) {
+    const res = await handler(post(body));
+    assertEquals(res.status, 400, body);
+    assertEquals((await res.json()).error.code, 'invalid_request', body);
+  }
+});
+
+Deno.test('role is case-sensitive and email length is capped', async () => {
+  const { handler, rec } = setup();
+  const tooLong = `${'a'.repeat(64)}@${'b'.repeat(251)}.test`; // 321 characters
+  for (
+    const body of [
+      { ...validBody, role: 'ADMIN' },
+      { ...validBody, role: '' },
+      { ...validBody, email: tooLong },
+      { ...validBody, email: 'two@@example.test' },
+      { ...validBody, workspaceId: WORKSPACE_ID.toUpperCase().replace('4', 'X') },
+    ]
+  ) {
+    assertEquals((await handler(post(body))).status, 400, JSON.stringify(body));
+  }
+  assertEquals(rec.inserted.length, 0);
+});
+
+Deno.test('explicit member and admin roles pass through', async () => {
+  for (const role of ['member', 'admin']) {
+    const { handler, rec } = setup();
+    assertEquals((await handler(post({ ...validBody, role }))).status, 201);
+    assertEquals(rec.inserted[0].role, role);
+  }
+});
+
+Deno.test('client-supplied server fields are ignored', async () => {
+  const { handler, rec } = setup();
+  await handler(post({
+    ...validBody,
+    tokenHash: 'f'.repeat(64),
+    token_hash: 'f'.repeat(64),
+    invited_by: 'someone-else',
+    expires_at: '2099-01-01',
+  }));
+  assertEquals(Object.keys(rec.inserted[0]).sort(), ['email', 'role', 'tokenHash', 'workspaceId']);
+  assertEquals(rec.inserted[0].tokenHash, await sha256Hex('fixed-token'));
+});
+
+Deno.test('the token is URL-encoded in the accept link', async () => {
+  const { handler } = setup({ mail: 'disabled', token: 'a+b/c=d&e' });
+  const { data } = await (await handler(post(validBody))).json();
+  assertEquals(data.acceptUrl, 'https://app.example.test/invites/accept#token=a%2Bb%2Fc%3Dd%26e');
+});
+
+Deno.test('store failures become a generic 500 with CORS and a log entry', async () => {
+  for (const storeThrows of ['auth', 'insert'] as const) {
+    const { handler, rec } = setup({ storeThrows });
+    const res = await handler(post(validBody));
+    assertEquals(res.status, 500, storeThrows);
+    assertEquals(res.headers.get('Access-Control-Allow-Origin'), 'https://app.example.test');
+    const text = await res.text();
+    assert(!text.includes('unreachable') && !text.includes('socket'), storeThrows);
+    assert(rec.logs.includes('unhandled_error'), storeThrows);
+    assertEquals(rec.emails.length, 0);
+  }
 });

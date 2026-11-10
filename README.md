@@ -9,9 +9,10 @@ Contents:
 | Migration: workspaces, roles, invites, account deletion | `supabase/migrations/20261110120000_workspaces_rbac.sql` |
 | Migration: workspace-scoped articles | `supabase/migrations/20261110120100_kb_articles.sql` |
 | Edge Function: `invite-member` | `supabase/functions/invite-member/` |
-| Database tests (pgTAP, 85 assertions incl. a plan regression test) | `supabase/tests/database/` |
+| Database tests (pgTAP, 127 assertions incl. a plan regression test and edge cases) | `supabase/tests/database/` |
 | Concurrency and auth-config tests (Deno, 5) | `supabase/tests/deno/` |
-| Function unit tests (16) and an end-to-end test | `supabase/functions/invite-member/*.test.ts` |
+| Function tests (36): handler, config, adapters against the live stack, end to end | `supabase/functions/invite-member/*.test.ts` |
+| Coverage gates | `scripts/plpgsql-coverage.sh`, `scripts/ts-coverage.sh` |
 | CI | `.github/workflows/ci.yml` |
 
 ## Data model and roles
@@ -60,11 +61,35 @@ The hierarchy is strict: you manage only roles below your own.
   - I/O goes through small interfaces, so the handler is unit-tested without a running stack.
 - **Error codes.** RPCs raise PostgREST's `PTxxx` codes, so clients get real HTTP statuses: `PT400` invalid invite, `PT401` not signed in, `PT403` email not confirmed, `PT409` last owner, `PT429` quota.
 
-Three pitfalls turned up while writing the tests, and all are fixed in the migrations:
+## Coverage
+
+CI fails below 100%, and both gates have been checked to fail when a test is removed.
+
+| Layer | Measured with | Statements / lines | Branches |
+|---|---|---|---|
+| PL/pgSQL functions and triggers (6) | `plpgsql_check` profiler while pgTAP and the Deno DB tests run | 100% | 100% |
+| Edge Function modules (`handler.ts`, `config.ts`, `adapters.ts`) | `deno test --coverage` | 100% | 100% |
+| RLS policies (13) | not measurable by tools; every policy has at least one allowed and one denied case | 13 / 13 | allow and deny |
+
+`index.ts` only passes config to `Deno.serve`. The end-to-end test exercises it inside the edge runtime, where coverage can't be collected. A source file that no test imports would be missing from Deno's report instead of showing 0%, so `ts-coverage.sh` requires each module by name.
+
+Edge cases covered, besides the role matrix:
+- **Identity:** a JWT without `sub`, the anon and service-role keys, a validly signed token with a user `sub` but a non-user role, expired, tampered and garbage tokens, anonymous and unconfirmed users.
+- **Input bounds:** name, slug, email, title and body lengths, exactly at and one past each limit; slug format and reserved words; the `token_hash` format; non-object and empty JSON bodies; extra fields smuggled into the request body; tokens that need URL encoding.
+- **Quotas:** invites per hour, pending invites per workspace, workspaces per user.
+- **Lifecycle:** invite revocation by each role; invites from removed, demoted or deleted inviters; workspace deletion cascading to members, invites and articles; account deletion with and without a co-owner, admin-over-member succession, and users owning several workspaces.
+- **Concurrency:** two owners stepping down at once; bulk demotion in one statement; refusal under `REPEATABLE READ`.
+- **Failure modes:** the auth server or database unreachable from the function, email provider errors and timeouts. All return a JSON error with CORS headers and no internal details.
+
+## Pitfalls
+
+These turned up while writing the tests, and all are fixed:
 
 1. `auto_expose_new_tables = false` still leaves `TRUNCATE`, `REFERENCES` and `TRIGGER` granted to `anon` and `authenticated`. The explicit `revoke all` takes care of that.
 2. Inside a function with `search_path = ''`, `=` and `<>` between `citext` values resolve to the case-sensitive `text` operators. It bit us twice, in the invite check and in the expired-invite cleanup. The code now uses `lower()` or `operator(extensions.=)`.
 3. Denied `UPDATE` and `DELETE` statements don't raise under RLS, they just touch no rows. A test that checks only the row afterwards can pass for the wrong reason. Our tests count affected rows and pair each denial with an allowed control case.
+4. Functions are executable by `PUBLIC` by default, and `authenticated` needs `USAGE` on the `private` schema for the policy helper. Together that made every trigger function in `private` callable by signed-in users. `ALTER DEFAULT PRIVILEGES IN SCHEMA ... REVOKE ... FROM PUBLIC` does not help, because per-schema defaults can only add to the global ones. Each function now revokes `PUBLIC` explicitly, and a test lists exactly which functions each role can execute.
+5. `getClaims()` accepts any correctly signed token. A token with a real user's `sub` and `role: service_role` would pass a check on `sub` alone, so the function also requires `role = authenticated`.
 
 A known trade-off: the unique `slug` makes `create_workspace` reveal whether a slug is taken. That is inherent to user-chosen slugs and needs to be shown in the UI anyway.
 
@@ -79,15 +104,13 @@ supabase db lint && supabase db advisors
 
 eval "$(supabase status -o env | sed 's/^/export /')"
 (cd supabase/tests/deno && DB_URL=$DB_URL deno task test)   # concurrency + auth config
+scripts/plpgsql-coverage.sh                       # PL/pgSQL coverage, fails below 100%
 
-cd supabase/functions/invite-member
-deno task check                                   # typecheck, lint, fmt
-deno test --allow-env handler.test.ts             # unit tests
+(cd supabase/functions/invite-member && deno task check && deno test --allow-env)  # offline unit tests
 
-# end to end: serve the function, then run the integration test against the stack
-supabase functions serve --env-file ../.env.example &
-SUPABASE_URL=$API_URL SUPABASE_ANON_KEY=$ANON_KEY SUPABASE_SERVICE_ROLE_KEY=$SERVICE_ROLE_KEY \
-  deno test --allow-env --allow-net=127.0.0.1 integration.test.ts
+# everything for the function, live stack and end to end, with the coverage gate
+supabase functions serve --env-file supabase/functions/.env.example &
+scripts/ts-coverage.sh
 ```
 
 The function requires `APP_URL` and `INVITE_FROM_EMAIL`. `ALLOWED_ORIGIN` defaults to the origin of `APP_URL`. Without `RESEND_API_KEY` it sends no email and returns the accept link to the admin instead.
