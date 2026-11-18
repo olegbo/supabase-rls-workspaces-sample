@@ -358,7 +358,7 @@ check_gh() {
       "ruleset create" | "ruleset delete") deny "$PERSON" ;;
     "pr review")
       for w in "${words[@]}"; do
-        case "$w" in --approve | -a) deny "$PERSON" ;; esac
+        case "$w" in --approve | --approve=* | -a) deny "$PERSON" ;; esac
       done
       ;;
   esac
@@ -381,8 +381,15 @@ check_gh() {
   method=$(tr '[:lower:]' '[:upper:]' <<<"${method:-$([ $writes = 1 ] && echo POST || echo GET)}")
   [ "$method" = GET ] && return 0
   if [ "$endpoint" = graphql ]; then
-    for w in "${words[@]}"; do
-      if [[ $w == *mutation* ]]; then deny "$API_WRITE"; fi
+    # Only an inline query can be checked: a query read from a file (-F query=@file) or from
+    # stdin (--input) could hold a mutation.
+    for ((i = 0; i < n; i++)); do
+      w=${words[i]}
+      if [[ $w == *mutation* || $w == --input || $w == --input=* ]]; then deny "$API_WRITE"; fi
+      case "$w" in
+        -F | --field) if [[ ${words[i + 1]:-} == *=@* ]]; then deny "$API_WRITE"; fi ;;
+        -F?* | --field=*) if [[ $w == *=@* ]]; then deny "$API_WRITE"; fi ;;
+      esac
     done
     return 0
   fi

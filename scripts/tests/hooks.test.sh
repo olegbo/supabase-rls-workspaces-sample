@@ -277,6 +277,13 @@ bash_case allow 'timeout 60 supabase test db'
 bash_case allow 'env -i ls .claude'
 bash_case allow 'git -C . status'
 
+echo "person-only actions: GraphQL from a file, --approve=true"
+bash_case deny 'gh api graphql -F query=@m.graphql'
+bash_case deny 'gh api graphql --field query=@m.graphql'
+bash_case deny 'gh api graphql --input m.json'
+bash_case deny 'gh pr review --approve=true 1'
+bash_case allow "gh api graphql -f query='query { viewer { login } }' -F first=10"
+
 echo "guard rails: readers that can write"
 bash_case deny 'find . -maxdepth 0 -fprint .claude/hooks/guard-bash.sh'
 bash_case deny 'git show HEAD:README.md --output=.claude/hooks/guard-bash.sh'
