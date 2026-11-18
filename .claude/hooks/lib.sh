@@ -76,12 +76,14 @@ fail_closed() {
 # which has no ${x,,}.
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
-# The guard rails: settings that wire the hooks, and the hooks themselves. A person
-# changes them; the agent must not be able to switch them off. Compared case-insensitively:
+# The guard rails: settings that wire the hooks, the hooks themselves, and the state the Stop
+# hook trusts (a green fingerprint there skips the checks). A person changes them; the agent
+# must not be able to switch them off. Compared case-insensitively:
 # on macOS, .claude/Settings.json is the same file as .claude/settings.json.
 is_guard_rail() {
   case "$(lower "$1")" in
     .claude/settings.json | .claude/settings.local.json | .claude/hooks | .claude/hooks/ | .claude/hooks/*) return 0 ;;
+    .claude/.state | .claude/.state/ | .claude/.state/*) return 0 ;;
   esac
   return 1
 }
@@ -97,8 +99,8 @@ holds_guard_rails() {
 
 # shellcheck disable=SC2034 # used by the scripts that source this file
 GUARD_RULE="The guard rails (.claude/settings.json, .claude/settings.local.json, .claude/hooks/, \
-and ~/.claude/settings*.json) are changed by a person, not by the agent. Ask the user to make \
-this change."
+.claude/.state/, and ~/.claude/settings*.json) are changed by a person, not by the agent. \
+Ask the user to make this change."
 
 # The path made absolute (~ expanded, relative to $2) with its directory resolved. The file
 # itself need not exist.

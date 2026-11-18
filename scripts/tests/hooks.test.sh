@@ -320,6 +320,13 @@ bash_case allow 'git stash pop'
 bash_case allow 'git stash push -q scripts/check-rls-coverage.sh'
 bash_case allow 'git stash push -m wip -- README.md'
 
+echo "guard rails: the Stop hook's state"
+bash_case deny 'echo abc > .claude/.state/green'
+bash_case deny 'rm -rf .claude/.state'
+file_case deny Write '{"file_path": ".claude/.state/green", "content": "abc"}'
+bash_case allow 'tail -n 40 .claude/.state/pgtap.log'
+file_case allow Read '{"file_path": ".claude/.state/pgtap.log"}'
+
 echo "guard rails: readers that can write"
 bash_case deny 'find . -maxdepth 0 -fprint .claude/hooks/guard-bash.sh'
 bash_case deny 'git show HEAD:README.md --output=.claude/hooks/guard-bash.sh'

@@ -118,7 +118,7 @@ This repository is set up for work with Claude Code. The agent gets written rule
 | Part | Where | What it does |
 |---|---|---|
 | Rules | [`CONSTITUTION.md`](CONSTITUTION.md), [`CLAUDE.md`](CLAUDE.md) | The invariants, then how to work: stack, check commands, conventions, the order plan → tests → code → review → PR. |
-| Hooks | [`.claude/settings.json`](.claude/settings.json), [`.claude/hooks/`](.claude/hooks/) | Refuse deploys, pushes to `main`, force pushes, `.env` access, edits to merged migrations, and the actions that belong to a person (merging, approving, secrets, repository settings). Lint every edited file. Run the affected suites before the agent reports "done". The hooks protect themselves: only a person can change them. 177 tests in [`scripts/tests/hooks.test.sh`](scripts/tests/hooks.test.sh), run in CI. |
+| Hooks | [`.claude/settings.json`](.claude/settings.json), [`.claude/hooks/`](.claude/hooks/) | Refuse deploys, pushes to `main`, force pushes, `.env` access, edits to merged migrations, and the actions that belong to a person (merging, approving, secrets, repository settings). Lint every edited file. Run the affected suites before the agent reports "done". The hooks protect themselves: only a person can change them. 283 tests in [`scripts/tests/hooks.test.sh`](scripts/tests/hooks.test.sh), run in CI. |
 | Subagents | [`.claude/agents/`](.claude/agents/) | `planner`, `architect`, `database-reviewer`, `security-reviewer`. |
 | Commands | [`.claude/commands/`](.claude/commands/) | `/plan` and `/review`. |
 | MCP | [`.mcp.json`](.mcp.json) | Supabase (the local stack, read-only) and GitHub (read-only, token from `GITHUB_PAT`). |
