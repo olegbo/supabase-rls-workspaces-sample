@@ -100,10 +100,21 @@ holds_project() {
   [[ $root == "$abs" || $root == "$abs"/* ]]
 }
 
+# A redirection operator at the start of a word, with an optional file-descriptor number
+# or `&`: `>`, `>>`, `<`, `1>`, `2>>`, `0<`, `&>`, `>&`, `<<<`. Group 3 is what follows it.
+REDIRECT_RE='^([0-9]+|&)?([<>]+&?)(.*)$'
+is_redirect() { [[ $1 =~ $REDIRECT_RE ]]; }
+# Output redirections write the path they name.
+is_output_redirect() { [[ $1 =~ $REDIRECT_RE && ${BASH_REMATCH[2]} == *\>* ]]; }
+strip_redirect() {
+  if [[ $1 =~ $REDIRECT_RE ]]; then printf '%s' "${BASH_REMATCH[3]}"; else printf '%s' "$1"; fi
+}
+
 # Paths a word may name: the word itself, without redirections, or the value of an
 # option such as `of=<path>` or `--output=<path>`.
 path_of() {
-  local w=${1#"${1%%[!<>]*}"}
+  local w
+  w=$(strip_redirect "$1")
   [[ $w == *=* ]] && w=${w##*=}
   printf '%s' "$w"
 }
@@ -117,11 +128,11 @@ check_env() {
   case "${1:-} ${2:-}" in echo\ * | printf\ * | "git commit" | "git tag") text_only=1 ;; esac
   for w in "$@"; do
     file_arg=0
-    case "$prev" in \<* | \>* | -F | --file) file_arg=1 ;; esac
-    [[ $w == [\<\>]* ]] && file_arg=1
+    case "$prev" in -F | --file) file_arg=1 ;; esac
+    if is_redirect "$prev" || is_redirect "$w"; then file_arg=1; fi
     prev=$w
     [ $text_only = 1 ] && [ $file_arg = 0 ] && continue
-    w=${w#"${w%%[!<>]*}"} # drop redirection characters: <.env, >.env
+    w=$(strip_redirect "$w") # <.env, 0<.env, >.env, &>.env
     [ -n "$w" ] || continue
     IFS='=' read -ra parts <<<"$w"
     for part in "${parts[@]}"; do
@@ -215,7 +226,7 @@ check_git_push() {
 check_migrations() {
   local w rel touches=0 redirect=0
   for w in "$@"; do
-    if [[ $w == \>* ]]; then redirect=1; fi
+    if is_output_redirect "$w"; then redirect=1; fi
     w=$(path_of "$w")
     [[ $w == *migrations* ]] || continue
     rel=$(relative_to_project "$root" "$w" "$cwd") || continue
@@ -234,7 +245,7 @@ check_migrations() {
 check_guard_rails() {
   local w rel touches=0 redirect=0 holds=0
   for w in "$@"; do
-    if [[ $w == \>* ]]; then redirect=1; fi
+    if is_output_redirect "$w"; then redirect=1; fi
     w=$(path_of "$w")
     [ -n "$w" ] || continue
     if [[ $w == *.claude* || $w == *hooks* || $w == *settings* || $w == . || $w == ./ ]] &&

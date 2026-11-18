@@ -234,6 +234,18 @@ bash_case allow 'find . -name "*.sql"'
 bash_case allow "cd $repo"
 bash_case allow 'git checkout main'
 
+echo "redirections with a file descriptor or &"
+bash_case deny 'echo {} 1>.claude/settings.json'
+bash_case deny 'echo {} 1> .claude/settings.json'
+bash_case deny 'cat x &>.claude/hooks/guard-bash.sh'
+bash_case deny 'echo x 2>>.claude/hooks/lib.sh'
+bash_case deny 'cat 0<.env'
+bash_case deny 'cat 0< supabase/functions/.env'
+bash_case deny "echo 'drop table t;' 1>>$merged"
+bash_case allow 'ls 2>/dev/null'
+bash_case allow 'supabase test db 2>&1'
+bash_case allow 'cat 0<.claude/settings.json'
+
 echo "guard rails: readers that can write"
 bash_case deny 'find . -maxdepth 0 -fprint .claude/hooks/guard-bash.sh'
 bash_case deny 'git show HEAD:README.md --output=.claude/hooks/guard-bash.sh'
