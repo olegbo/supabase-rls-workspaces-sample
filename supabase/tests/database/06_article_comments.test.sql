@@ -7,7 +7,7 @@
 -- are paired with an allowed case on the same row.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(53);
+select plan(54);
 
 -- Fixtures (as postgres, RLS does not apply) ------------------------------------
 --   acme  (w1): a1 owner, ad admin, b1 b2 b3 f5 members
@@ -386,6 +386,12 @@ select results_eq(
   $$with r as (update public.kb_article_comments set body = 'edited while hidden' returning 1)
     select count(*)::int from r$$,
   array[1], 'author cannot edit own comments on an article once it is unpublished');
+
+-- Unfiltered for the same reason: only the delete policy keeps the comments on art01.
+-- @policy kb_article_comments "authors and admins delete comments" deny
+select results_eq(
+  $$with r as (delete from public.kb_article_comments returning 1) select count(*)::int from r$$,
+  array[1], 'author cannot delete own comments on an article once it is unpublished');
 
 -- Integrity and cascades (as postgres) -----------------------------------------
 reset role;

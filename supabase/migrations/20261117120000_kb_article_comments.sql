@@ -99,10 +99,10 @@ create policy "members comment on readable articles"
     and exists (select 1 from public.kb_articles a where a.id = kb_article_comments.article_id)
   );
 
--- Admins moderate by deleting, never by rewriting someone else's words. Editing also needs
--- the article to be readable: an update that reads no column (`set body = '...'` with no
--- WHERE) does not bring in the read policy. Deleting does not need it, so authors can
--- always remove their own text while they are members.
+-- Admins moderate by deleting, never by rewriting someone else's words. An author's edit and
+-- delete both need the article to be readable, so comments on a hidden article are frozen
+-- for their author; admins can still delete them. The policies say so themselves: a
+-- statement that reads no column (no WHERE) does not bring in the read policy.
 create policy "authors edit own comments"
   on public.kb_article_comments for update to authenticated
   using (
@@ -122,6 +122,7 @@ create policy "authors and admins delete comments"
     or (
       workspace_id = any (array(select private.workspace_ids_with_role('member')))
       and created_by = (select auth.uid())
+      and exists (select 1 from public.kb_articles a where a.id = kb_article_comments.article_id)
     )
   );
 

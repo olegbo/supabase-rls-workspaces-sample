@@ -10,7 +10,7 @@ Contents:
 | Migration: workspace-scoped articles | `supabase/migrations/20261110120100_kb_articles.sql` |
 | Migration: comments on articles | `supabase/migrations/20261117120000_kb_article_comments.sql` |
 | Edge Function: `invite-member` | `supabase/functions/invite-member/` |
-| Database tests (pgTAP, 185 assertions incl. a plan regression test and edge cases) | `supabase/tests/database/` |
+| Database tests (pgTAP, 186 assertions incl. a plan regression test and edge cases) | `supabase/tests/database/` |
 | Concurrency and auth-config tests (Deno, 6) | `supabase/tests/deno/` |
 | Function tests (36): handler, config, adapters against the live stack, end to end | `supabase/functions/invite-member/*.test.ts` |
 | Coverage gates | `scripts/plpgsql-coverage.sh`, `scripts/ts-coverage.sh` |
@@ -57,7 +57,7 @@ The hierarchy is strict: you manage only roles below your own.
   - A comment is visible exactly when its article is: the policy checks `exists (select 1 from kb_articles ...)`, which runs under the reader's own `kb_articles` RLS, so the article rule is reused, not copied. Unpublishing an article hides its comments, the author's included.
   - A composite foreign key `(article_id, workspace_id)` to `kb_articles (id, workspace_id)` makes a comment's workspace equal its article's for every writer, the service role included. The stored `workspace_id` lets the policies use the index.
   - Comments go with their article and workspace; they stay, without an author, when the account is deleted.
-  - Authors edit their own comments only while they can read the article, so unpublishing an article freezes its comments. They can still delete them while they are members, so their own text can always be removed.
+  - Authors edit and delete their own comments only while they can read the article, so unpublishing an article freezes its comments for their authors. Admins can still delete them. Both policies check the article themselves: a statement with no `WHERE` does not bring in the read policy.
   - Bodies are plain text, 1 to 4000 characters, not only whitespace. Clients must render them as text, never as HTML.
 - **Quotas.** Each user can send 20 invites per hour, each workspace can have 100 pending invites, each user can create 10 workspaces, and each user can post 100 comments per hour across all workspaces. Signup and email rates use Supabase's `[auth.rate_limit]`.
 - **Auth config is part of the security model.** Invites trust `email_confirmed_at`, which means nothing if Supabase confirms every signup on its own. `enable_confirmations = true` is committed, and a test fails if it is turned off. Anonymous sign-ins are off, and passwords need 8 characters.

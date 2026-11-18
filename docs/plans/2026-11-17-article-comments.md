@@ -2,7 +2,7 @@
 
 ## 1. Goal
 
-Members of a workspace can leave flat, plain-text comments on any article they can read: published articles, their own drafts, and, for admins and owners, every draft. A comment is visible only to people who can read its article right now, so hiding an article also hides its comments. The rule is inherited from `kb_articles` RLS and is not copied. Authors edit and delete their own comments while they are members. Admins and owners can delete any comment in their workspace (moderation) but cannot edit someone else's. Comments are deleted with their article (and so with the workspace). They stay when the author leaves the workspace or deletes their account; on account deletion `created_by` becomes null, as it does for articles. Each user can post at most 100 comments per rolling hour, enforced in the database like the invite quota, and it holds under concurrent sessions. Everything lives in one new migration, one new pgTAP file, three new plan-regression assertions and one Deno concurrency test.
+Members of a workspace can leave flat, plain-text comments on any article they can read: published articles, their own drafts, and, for admins and owners, every draft. A comment is visible only to people who can read its article right now, so hiding an article also hides its comments. The rule is inherited from `kb_articles` RLS and is not copied. Authors edit and delete their own comments while they are members and can read the article; comments on a hidden article are frozen for their author. Admins and owners can delete any comment in their workspace (moderation) but cannot edit someone else's. Comments are deleted with their article (and so with the workspace). They stay when the author leaves the workspace or deletes their account; on account deletion `created_by` becomes null, as it does for articles. Each user can post at most 100 comments per rolling hour, enforced in the database like the invite quota, and it holds under concurrent sessions. Everything lives in one new migration, one new pgTAP file, three new plan-regression assertions and one Deno concurrency test.
 
 **Out of scope:** threads or replies, reactions, mentions, notifications, rich text or markdown rendering, edit history, soft delete or a moderation audit log, Realtime, Edge Function changes (none needed), and client UI.
 
@@ -14,12 +14,12 @@ The feature request, as acceptance criteria. Section 6 maps each to the assertio
 |---|---|---|---|
 | R1 | Members comment on articles they can read, and only those | Insert policy: membership plus an `exists` on `kb_articles` under the caller's RLS | 4, 6, 8–10, 25, 31, 46 |
 | R2 | A comment is visible exactly when its article is | Select policy reuses `kb_articles` RLS through the `exists` | 2, 3, 7, 24, 30, 38, 44, 45 |
-| R3 | Authors edit their own comments while members and while the article is readable; they delete them while members | Update policy keyed on `created_by`, membership and a readable article; delete policy on `created_by` plus membership | 18, 19, 23, 32, 39, 40, 47 |
+| R3 | Authors edit and delete their own comments while members and while the article is readable | Update policy and the author branch of the delete policy: `created_by`, membership and a readable article | 18, 19, 23, 32, 39, 40, 47, 48 |
 | R4 | Admins and owners delete any comment in their workspace, edit none | Delete policy admin branch; update policy has none | 33–37, 43 |
-| R5 | No comment reaches or is reached from another workspace | Composite FK to `kb_articles (id, workspace_id)`; policies on `workspace_id` | 10, 21, 25–29, 48 |
-| R6 | Comments go with their article and workspace; they survive the author leaving or deleting the account | `on delete cascade` from the article; `on delete set null` on `created_by` | 41, 42, 49, 50 |
+| R5 | No comment reaches or is reached from another workspace | Composite FK to `kb_articles (id, workspace_id)`; policies on `workspace_id` | 10, 21, 25–29, 49 |
+| R6 | Comments go with their article and workspace; they survive the author leaving or deleting the account | `on delete cascade` from the article; `on delete set null` on `created_by` | 41, 42, 50, 51 |
 | R7 | Plain text, 1 to 4000 characters, not only whitespace | Check constraint | 13–17 |
-| R8 | At most 100 comments per user per rolling hour, also under concurrency | `before insert` trigger with a per-author advisory lock | 12, 51–53, Deno race test |
+| R8 | At most 100 comments per user per rolling hour, also under concurrency | `before insert` trigger with a per-author advisory lock | 12, 52–54, Deno race test |
 | R9 | Listing comments stays fast at scale | Indexes; plan-regression assertions in 04 | 04: three new assertions |
 
 ## 3. Access matrix
@@ -36,6 +36,7 @@ The feature request, as acceptance criteria. Section 6 maps each to the assertio
 | Comment on an article they cannot read, or in another workspace | — | — | — | — | — |
 | Edit own comment (`body` only) | — | — | ✓ | ✓ | ✓ |
 | Edit own comment once the article is hidden from you | — | — | — | n/a (admins read all) | n/a |
+| Delete own comment once the article is hidden from you | — | — | — | n/a (admins delete any) | n/a |
 | Edit someone else's comment | — | — | — | — | — |
 | Delete own comment | — | — | ✓ | ✓ | ✓ |
 | Delete any comment in the workspace, including an owner's or a deleted user's | — | — | — | ✓ | ✓ |
@@ -138,7 +139,7 @@ create trigger kb_article_comments_before_insert
 
 **Why `security definer`.** With invoker rights, RLS would hide the user's own comments on articles they can no longer read, so the count would be too low. With `created_by = null` (inserts without a JWT, such as fixtures or the service role) the trigger returns at once.
 
-**Coverage.** The function has three paths: no author (hit by the 04 plan fixture, which inserts without a JWT), the raise (assertion 52) and the normal return (assertion 51). All are hit, so PL/pgSQL coverage stays at 100%. `touch_updated_at` is already covered.
+**Coverage.** The function has three paths: no author (hit by the 04 plan fixture, which inserts without a JWT), the raise (assertion 53) and the normal return (assertion 52). All are hit, so PL/pgSQL coverage stays at 100%. `touch_updated_at` is already covered.
 
 ## 5. Grants and policies
 
@@ -185,7 +186,7 @@ with check (
 )
 ```
 
-**`"authors and admins delete comments"`**, `for delete to authenticated`:
+**`"authors and admins delete comments"`**, `for delete to authenticated`. The author branch also requires a readable article, like the update policy; the admin branch does not, so moderators can remove comments on any article:
 
 ```sql
 using (
@@ -193,6 +194,7 @@ using (
   or (
     workspace_id = any (array(select private.workspace_ids_with_role('member')))
     and created_by = (select auth.uid())
+    and exists (select 1 from public.kb_articles a where a.id = kb_article_comments.article_id)
   )
 )
 ```
@@ -209,7 +211,7 @@ grant update (body) on public.kb_article_comments to authenticated;
 
 ## 6. Tests and check step
 
-### `supabase/tests/database/06_article_comments.test.sql` (new, `select plan(53)`)
+### `supabase/tests/database/06_article_comments.test.sql` (new, `select plan(54)`)
 
 The file is wrapped in `begin; ... rollback;`. The numbers below are the assertion order in the file.
 
@@ -305,18 +307,19 @@ As postgres: `update kb_articles set published = false where id = art01`. Then a
 45. author no longer sees own comments once the article is hidden: `is(count where article_id = art01, 0)`, `@policy kb_article_comments "members read comments on readable articles" deny`
 46. member cannot comment on an article once it is unpublished: `throws_ok` with the RLS message, `@policy kb_article_comments "members comment on readable articles" deny`
 47. author cannot edit own comments on an article once it is unpublished: as b1, `with r as (update ... set body = 'edited while hidden' returning 1) select count(*)`, expecting `array[1]` (only b1's comment on art05; the two on art01 stay). `@policy kb_article_comments "authors edit own comments" deny`. The update sets a constant and reads no column, so the read policy does not join in and cannot mask the update policy.
+48. author cannot delete own comments on an article once it is unpublished: as b1, an unfiltered `with r as (delete ... returning 1) select count(*)`, expecting `array[1]` (only the comment on art05). `@policy kb_article_comments "authors and admins delete comments" deny`. Unfiltered for the same reason as 47.
 
 **Integrity and cascades** (as postgres, RLS bypassed)
 
-48. the FK holds even without RLS: a comment with `workspace_id = w1` cannot point at art04 in w2: `throws_ok(..., '23503')`, untagged
-49. comments go with their article (`delete from kb_articles where id = art01`): `is(count where article_id = art01, 0)`, untagged
-50. comments go with the workspace (`delete from workspaces where id = w2`): `is(count where body = 'foreign comment', 0)`, untagged
+49. the FK holds even without RLS: a comment with `workspace_id = w1` cannot point at art04 in w2: `throws_ok(..., '23503')`, untagged
+50. comments go with their article (`delete from kb_articles where id = art01`): `is(count where article_id = art01, 0)`, untagged
+51. comments go with the workspace (`delete from workspaces where id = w2`): `is(count where body = 'foreign comment', 0)`, untagged
 
 **Quota** (as postgres, with `created_by = b3` written out because `request.jwt.claims` set earlier in the transaction still applies: insert 50 b3 comments on art05 at `now() - interval '61 minutes'`, one at exactly `now() - interval '1 hour'`, then 99 at `now() - interval '30 minutes'`; as b3)
 
-51. b3's 100th comment within an hour is accepted: `lives_ok`, untagged. Hits the trigger's return branch.
-52. b3's 101st comment within an hour is refused: `throws_ok(..., 'PT429', 'comment rate limit exceeded')`, untagged. Hits the raise branch. The rows at 61 minutes and at exactly one hour pin both edges of the window: a wider window, or `>=` instead of `>`, would count them and refuse the 100th comment.
-53. the quota is per user, so another member is unaffected (b1 on art05): `lives_ok`, untagged
+52. b3's 100th comment within an hour is accepted: `lives_ok`, untagged. Hits the trigger's return branch.
+53. b3's 101st comment within an hour is refused: `throws_ok(..., 'PT429', 'comment rate limit exceeded')`, untagged. Hits the raise branch. The rows at 61 minutes and at exactly one hour pin both edges of the window: a wider window, or `>=` instead of `>`, would count them and refuse the 100th comment.
+54. the quota is per user, so another member is unaffected (b1 on art05): `lives_ok`, untagged
 
 **Tag tally** (every policy has at least one allow and one deny):
 
@@ -325,7 +328,7 @@ As postgres: `update kb_articles set published = false where id = art01`. Then a
 | select | 2, 7, 30, 44 | 3, 24, 38, 45 |
 | insert | 4, 6, 31 | 8, 9, 10, 25, 46 |
 | update | 18, 32 | 19, 28, 33, 36, 39, 47 |
-| delete | 23, 34, 35, 37, 43 | 22, 29, 40 |
+| delete | 23, 34, 35, 37, 43 | 22, 29, 40, 48 |
 
 ### `supabase/tests/database/04_policy_plans.test.sql` (edit, `plan(4)` becomes `plan(7)`)
 
@@ -351,7 +354,7 @@ The quota under concurrency cannot be tested in one pgTAP transaction. The autho
 
 **Unchanged suites:** 01 (RLS on every table; anon has no privileges) and 05 (function execute list) pick up the new table and function automatically, and must still pass. The Edge Function does not change.
 
-**Check step.** Every requirement in section 2 maps to the assertions above. Each new test is also run once against a deliberately broken policy or trigger, to see it fail: the read policy limited to published articles (7 fails), the delete policy's admin branch untied from the workspace (29 fails), the update policy without the readable-article check (47 fails), the lock removed (the Deno race test fails).
+**Check step.** Every requirement in section 2 maps to the assertions above. Each new test is also run once against a deliberately broken policy or trigger, to see it fail: the read policy limited to published articles (7 fails), the delete policy's admin branch untied from the workspace (29 fails), the update or delete policy without the readable-article check (47 or 48 fails), the lock removed (the Deno race test fails).
 
 ## 7. Commits
 
@@ -362,7 +365,7 @@ The quota under concurrency cannot be tested in one pgTAP transaction. The autho
    - a comments row in the role table
    - a "Design decisions" bullet on the composite FK, RLS inherited from articles, the quota and its lock
    - Quotas: 100 comments per hour per user; concurrency: two comments at the quota edge at once
-   - counts: pgTAP 129 → 185, Deno tests 5 → 6, PL/pgSQL functions 6 → 7, RLS policies 13 → 17
+   - counts: pgTAP 129 → 186, Deno tests 5 → 6, PL/pgSQL functions 6 → 7, RLS policies 13 → 17
 
    Then run `supabase db reset`, `supabase test db`, `scripts/check-rls-coverage.sh`, the Deno DB tests, `scripts/plpgsql-coverage.sh 100`, `supabase db lint --level warning --fail-on warning && supabase db advisors`, and `scripts/check-migrations.sh origin/main`. CI goes green.
 4. Follow-ups from `/review` and `claude-review`, one commit per fix.
@@ -372,7 +375,7 @@ The quota under concurrency cannot be tested in one pgTAP transaction. The autho
 | Step | Hours | What drives it |
 |---|---|---|
 | Plan and architect review | 1.5 | The access matrix and the inherited-visibility design; checking plans on 100k rows |
-| Tests | 3 | 53 pgTAP assertions with exact counts, unmasked write denials, the race test with two connections, and a mutation run per new test |
+| Tests | 3 | 54 pgTAP assertions with exact counts, unmasked write denials, the race test with two connections, and a mutation run per new test |
 | Migration and README | 1.5 | Small DDL; most of the time is the quota trigger and the coverage gate |
 | Review fixes | 1–2 | Depends on what review finds |
 | **Total** | **7–8** | |
@@ -386,7 +389,7 @@ The quota under concurrency cannot be tested in one pgTAP transaction. The autho
 5. **Rejoining restores rights.** A former member who is invited back regains edit and delete rights on their old comments, because the rights are keyed on `created_by` plus current membership. Acceptable?
 6. **The quota lock serializes one author's inserts.** Concurrent comments by the same user wait for each other for the length of a transaction. Other users are not affected. Acceptable at human posting rates.
 7. **Migration lock on `kb_articles`.** `create unique index kb_articles_id_workspace_id_key` takes a SHARE lock, blocking article writes while it builds. That is brief at the scale of the README's benchmark (around 600k rows; this demo has no production data), and `concurrently` is unavailable inside a migration transaction. With a hosted project, check its size before deploying.
-8. **Editing and deleting comments on a hidden article.** *Decided at plan approval:* editing requires the article to be readable (the `exists` in the UPDATE policy, proven by assertion 47); deleting does not, so authors can always remove their own text while they are members.
+8. **Editing and deleting comments on a hidden article.** *Decided at plan approval, corrected in PR review:* comments on a hidden article are frozen for their author: no edit (assertion 47) and no delete (48); admins can still delete them. The first decision let authors delete them, but every API delete has a filter, which brings in the read policy and hides those rows, so it could not work as written.
 9. **Plain text rendering is a client responsibility.** The database stores raw text and cannot prevent XSS. The UI must render comment bodies as text.
 
 ## 10. Architect review
