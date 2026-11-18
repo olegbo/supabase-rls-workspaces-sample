@@ -47,7 +47,7 @@ read_only_command() {
   local first=${1:-} sub=${2:-} w
   case "$first" in
     cat | head | tail | grep | diff | wc | ls | stat | shasum | sha256sum | md5 | md5sum | \
-      echo | printf | shellcheck | jq) return 0 ;;
+      echo | printf | shellcheck | jq | cd | pushd) return 0 ;;
     less | more)
       for w in "$@"; do case "$w" in -o* | -O* | --log-file* | --LOG-FILE*) return 1 ;; esac; done
       return 0
@@ -280,7 +280,7 @@ check_migrations() {
   for w in "$@"; do
     if is_output_redirect "$w"; then redirect=1; fi
     w=$(path_of "$w")
-    [[ $w == *migrations* ]] || continue
+    [[ $w == *migrations* || $cwd != "$root" ]] || continue # after a cd, any word may
     rel=$(relative_to_project "$root" "$w" "$cwd") || continue
     case "$rel" in
       supabase/migrations | supabase/migrations/ | supabase/migrations/*[*?]*) touches=1 ;;
@@ -295,24 +295,26 @@ check_migrations() {
 # The guard rails themselves: the agent must not be able to switch them off, by editing
 # them or by deleting or moving a directory that holds them.
 check_guard_rails() {
-  local w lw rel touches=0 redirect=0 holds=0
+  local w lw rel touches=0 redirect=0 holds=0 removes=0
+  if removes_or_moves "$@"; then removes=1; fi
   for w in "$@"; do
     if is_output_redirect "$w"; then redirect=1; fi
     w=$(path_of "$w")
     [ -n "$w" ] || continue
     lw=$(lower "$w")
-    if [[ $lw == *.claude* || $lw == *hooks* || $lw == *settings* || $w == . || $w == ./ ]] &&
+    # Words that may name a guard rail; after a cd away from the root, any word may.
+    if [[ $lw == *.claude* || $lw == *hooks* || $lw == *settings* || $w == . || $w == ./ ||
+      $cwd != "$root" ]] &&
       rel=$(relative_to_project "$root" "$w" "$cwd"); then
       if is_guard_rail "$rel"; then touches=1; fi
       if holds_guard_rails "$rel"; then holds=1; fi
     fi
     if [[ $lw == *settings* ]] && is_user_guard_rail "$(absolute_path "$w" "$cwd")"; then touches=1; fi
-    if [[ $w == /* || $w == . || $w == ./ || $w == .. || $w == ../* || $w == '~'* ]] &&
-      holds_project "$w"; then
-      holds=1
-    fi
+    # Any word of a command that deletes or moves: `cd .. && rm -rf <project>` names the
+    # project root by its bare name.
+    if [ $removes = 1 ] && holds_project "$w"; then holds=1; fi
   done
-  if [ $holds = 1 ] && removes_or_moves "$@"; then deny "$GUARD_RULE"; fi
+  if [ $holds = 1 ] && [ $removes = 1 ]; then deny "$GUARD_RULE"; fi
   [ $touches = 1 ] || return 0
   if [ $redirect = 1 ]; then deny "$GUARD_RULE"; fi
   if ! read_only_command "$@"; then deny "$GUARD_RULE"; fi
@@ -402,7 +404,7 @@ check_gh() {
 # Checks every simple command in a command line. Strings run by `sh -c` / `bash -c` /
 # `eval` are checked the same way, wherever the shell appears (`timeout 5 bash -c ...`).
 analyze() {
-  local seg i j w segments out
+  local seg i j w segments out saved_cwd
   local -a words stripped
   # Split first: if the splitter fails, refuse (fail closed) instead of seeing no commands.
   segments=$(printf '%s' "$1" | perl "$(dirname "$0")/split-command.pl") || exit 1
@@ -417,6 +419,16 @@ analyze() {
     IFS=$'\x1f' read -ra stripped <<<"$out" || true
     [ ${#stripped[@]} -gt 0 ] || continue
     words=("${stripped[@]}")
+    # `cd x && rm y`: later relative paths resolve against x. A target the hook cannot know
+    # (`cd -`, `cd "$dir"`) leaves the directory as it was: a value in a variable is a
+    # known limit.
+    if [[ ${words[0]} == cd || ${words[0]} == pushd ]]; then
+      w=${words[1]:-$HOME}
+      [[ $w == -- ]] && w=${words[2]:-$HOME}
+      if [[ $w != -* && $w != *\$* && $w != *\`* ]]; then
+        w=$(cd "$cwd" 2>/dev/null && cd "$(absolute_path "$w" "$cwd")" 2>/dev/null && pwd -P) && cwd=$w
+      fi
+    fi
 
     # A shell with no script or -c reads its commands from stdin (`... | bash`), which
     # cannot be checked.
@@ -439,7 +451,12 @@ analyze() {
       case "${words[i]##*/}" in
         sh | bash | zsh | dash | ksh)
           for ((j = i + 1; j < ${#words[@]} - 1; j++)); do
-            if [[ ${words[j]} == -*c* && ${words[j]} != --* ]]; then analyze "${words[j + 1]}"; fi
+            # The inner shell's cd does not move the outer command line.
+            if [[ ${words[j]} == -*c* && ${words[j]} != --* ]]; then
+              saved_cwd=$cwd
+              analyze "${words[j + 1]}"
+              cwd=$saved_cwd
+            fi
           done
           ;;
         eval) analyze "${words[*]:i+1}" ;;

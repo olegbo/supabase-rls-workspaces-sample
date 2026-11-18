@@ -284,6 +284,17 @@ bash_case deny 'gh api graphql --input m.json'
 bash_case deny 'gh pr review --approve=true 1'
 bash_case allow "gh api graphql -f query='query { viewer { login } }' -F first=10"
 
+echo "a cd earlier in the command line"
+bash_case deny 'cd .claude && rm settings.json'
+bash_case deny 'cd .claude; echo {} > settings.json'
+bash_case deny 'pushd .claude/hooks && rm guard-bash.sh'
+bash_case deny 'cd supabase && rm migrations/20260101000000_init.sql'
+bash_case deny 'cd supabase/migrations && rm 20260101000000_init.sql'
+bash_case deny "cd .. && rm -rf $(basename "$repo")"
+bash_case allow 'cd supabase && ls migrations'
+bash_case allow 'cd /tmp && rm -f settings.json'
+bash_case allow "bash -c 'cd /tmp' && cat .claude/settings.json"
+
 echo "guard rails: readers that can write"
 bash_case deny 'find . -maxdepth 0 -fprint .claude/hooks/guard-bash.sh'
 bash_case deny 'git show HEAD:README.md --output=.claude/hooks/guard-bash.sh'
