@@ -81,14 +81,65 @@ read_only_command() {
   return 1
 }
 
+# The git subcommand, past git's global options (-C <dir>, -c <key=value>, --work-tree=...).
+git_subcommand() {
+  local i
+  for ((i = 2; i <= $#; i++)); do
+    case "${!i}" in
+      -C | -c | --git-dir | --work-tree | --namespace | --exec-path | --super-prefix) i=$((i + 1)) ;;
+      -*) ;;
+      *)
+        printf '%s' "${!i}"
+        return 0
+        ;;
+    esac
+  done
+}
+
 # Commands that delete, move or change the permissions of the paths they are given.
 removes_or_moves() {
   case "${1##*/}" in
     rm | rmdir | unlink | mv | chmod | chown | chgrp | chflags | ln | rsync | shred | trash) return 0 ;;
     find) [[ " $* " == *" -delete "* || " $* " == *" -exec"* || " $* " == *" -ok"* ]] && return 0 ;;
-    git) case "${2:-}" in rm | mv | clean | checkout | restore) return 0 ;; esac ;;
+    git) case "$(git_subcommand "$@")" in rm | mv | clean | checkout | restore) return 0 ;; esac ;;
   esac
   return 1
+}
+
+# Drops leading VAR=value assignments and wrapper commands with their options, which do not
+# change what runs: `env -i NAME=x rm ...`, `nice -n 5 rm ...`, `timeout -s KILL 5 rm ...`.
+# Prints the remaining words, separated by \x1f like the splitter's output.
+strip_wrappers() {
+  local -a w=("$@")
+  local cmd
+  while [ ${#w[@]} -gt 0 ]; do
+    cmd=${w[0]##*/}
+    if [[ ${w[0]} =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+      w=("${w[@]:1}")
+    elif [[ $cmd =~ ^(env|sudo|command|exec|time|nohup|nice|ionice|stdbuf|timeout|npx|bunx|caffeinate)$ ]]; then
+      w=("${w[@]:1}")
+      # `command -v x` only looks x up; nothing runs.
+      if [ "$cmd" = command ] && [[ ${w[0]:-} == -v || ${w[0]:-} == -V ]]; then return 0; fi
+      while [ ${#w[@]} -gt 0 ] && [[ ${w[0]} == -* ]]; do
+        case "$cmd ${w[0]}" in
+          # Options that take a separate value.
+          "env -u" | "env -C" | "env --unset" | "env --chdir" | "nice -n" | "nice --adjustment" | \
+            "sudo -u" | "sudo -g" | "sudo -C" | "sudo -h" | "sudo -p" | "sudo -U" | "sudo -r" | \
+            "sudo -t" | "sudo -D" | "timeout -s" | "timeout -k" | "timeout --signal" | \
+            "timeout --kill-after" | "exec -a" | "ionice -c" | "ionice -n" | "ionice -p" | \
+            "stdbuf -i" | "stdbuf -o" | "stdbuf -e" | "npx -p" | "npx --package" | "time -o" | \
+            "time -f") w=("${w[@]:2}") ;;
+          *) w=("${w[@]:1}") ;;
+        esac
+      done
+      # timeout's duration comes before the command.
+      if [ "$cmd" = timeout ] && [ ${#w[@]} -gt 0 ]; then w=("${w[@]:1}"); fi
+    else
+      break
+    fi
+  done
+  [ ${#w[@]} -gt 0 ] && printf '%s\x1f' "${w[@]}"
+  return 0
 }
 
 # True when the path (absolute, or relative to cwd) is the project root or a directory
@@ -344,24 +395,21 @@ check_gh() {
 # Checks every simple command in a command line. Strings run by `sh -c` / `bash -c` /
 # `eval` are checked the same way, wherever the shell appears (`timeout 5 bash -c ...`).
 analyze() {
-  local seg i j w segments
-  local -a words
+  local seg i j w segments out
+  local -a words stripped
   # Split first: if the splitter fails, refuse (fail closed) instead of seeing no commands.
   segments=$(printf '%s' "$1" | perl "$(dirname "$0")/split-command.pl") || exit 1
   while IFS= read -r seg; do
     [ -n "$seg" ] || continue
     IFS=$'\x1f' read -ra words <<<"$seg"
     # Leading VAR=value assignments and wrappers do not change what runs.
-    while [ ${#words[@]} -gt 0 ]; do
-      if [[ ${words[0]} =~ ^[A-Za-z_][A-Za-z0-9_]*= || ${words[0]} =~ ^(env|sudo|command|exec|time|nohup|nice|npx|bunx)$ ]]; then
-        words=("${words[@]:1}")
-      elif [ "${words[0]}" = timeout ] && [ ${#words[@]} -gt 1 ]; then
-        words=("${words[@]:2}")
-      else
-        break
-      fi
-    done
-    [ ${#words[@]} -gt 0 ] || continue
+    stripped=()
+    # Not `IFS=... read < <(strip_wrappers ...)`: bash 3.2 applies that IFS inside the
+    # substitution too, and "${w[@]:1}" then joins the words.
+    out=$(strip_wrappers "${words[@]}")
+    IFS=$'\x1f' read -ra stripped <<<"$out" || true
+    [ ${#stripped[@]} -gt 0 ] || continue
+    words=("${stripped[@]}")
 
     # A shell with no script or -c reads its commands from stdin (`... | bash`), which
     # cannot be checked.

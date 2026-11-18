@@ -263,6 +263,20 @@ bash_case allow 'cat ~/.claude/settings.json'
 file_case allow Read "{\"file_path\": \"$HOME/.claude/settings.json\"}"
 file_case allow Write '{"file_path": "/tmp/settings.json", "content": "{}"}'
 
+echo "wrappers with options, git global options"
+bash_case deny 'env -i rm -rf .claude'
+bash_case deny 'env -u HOME FOO=1 rm -rf .claude'
+bash_case deny 'nice -n 5 rm -rf .claude'
+bash_case deny 'timeout -s KILL 5 rm -rf .claude'
+bash_case deny 'sudo -u root rm -rf .claude'
+bash_case deny 'git -C . rm -r .claude'
+bash_case deny 'git --work-tree=. checkout HEAD -- .claude'
+bash_case deny 'timeout --kill-after=1 5 supabase db push'
+bash_case deny 'nice -n 5 git push origin main'
+bash_case allow 'timeout 60 supabase test db'
+bash_case allow 'env -i ls .claude'
+bash_case allow 'git -C . status'
+
 echo "guard rails: readers that can write"
 bash_case deny 'find . -maxdepth 0 -fprint .claude/hooks/guard-bash.sh'
 bash_case deny 'git show HEAD:README.md --output=.claude/hooks/guard-bash.sh'
