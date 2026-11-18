@@ -52,12 +52,21 @@ jobs:
         env:
           VERSION: 8.30.1
           SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+          BASE_REF: ${{ github.base_ref }}
         run: |
           curl -sSfLo gitleaks.tar.gz \
             "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz"
           echo "$SHA256  gitleaks.tar.gz" | sha256sum -c -
           tar -xzf gitleaks.tar.gz gitleaks
-          ./gitleaks git --redact --verbose --exit-code 1 .
+          # The config and the ignore list come from the base branch, never from the change
+          # under scan, and inline gitleaks:allow comments are ignored: a PR cannot allowlist
+          # its own secret. On a push to main, main is the base.
+          base=origin/${BASE_REF:-main}
+          for f in .gitleaks.toml .gitleaksignore; do
+            rm -f "$f"
+            if git cat-file -e "$base:$f" 2>/dev/null; then git show "$base:$f" >"$f"; fi
+          done
+          ./gitleaks git --redact --verbose --exit-code 1 --ignore-gitleaks-allow .
 
   test:
     runs-on: ubuntu-latest
