@@ -40,17 +40,38 @@ REMOTE_DB="psql to a host other than the local stack is blocked: hosted database
 only through CI."
 
 # Commands that only read the paths they are given. Anything else counts as a write.
+# Some readers have options that write a file or run a program; with one of those, the
+# command counts as a write.
 read_only_command() {
-  local first=${1:-} sub=${2:-}
+  local first=${1:-} sub=${2:-} w
   case "$first" in
-    cat | head | tail | less | more | grep | rg | diff | wc | ls | stat | file | shasum | \
-      sha256sum | md5 | md5sum | psql | supabase | echo | printf | tree | shellcheck | jq) return 0 ;;
+    cat | head | tail | grep | diff | wc | ls | stat | shasum | sha256sum | md5 | md5sum | \
+      echo | printf | shellcheck | jq) return 0 ;;
+    less | more)
+      for w in "$@"; do case "$w" in -o* | -O* | --log-file* | --LOG-FILE*) return 1 ;; esac; done
+      return 0
+      ;;
+    tree) for w in "$@"; do [ "$w" = -o ] && return 1; done; return 0 ;;
+    rg) for w in "$@"; do [[ $w == --pre || $w == --pre=* ]] && return 1; done; return 0 ;;
+    file) for w in "$@"; do [ "$w" = -C ] && return 1; done; return 0 ;;
+    psql)
+      # -f reads a script; -o and -L write their output to a file.
+      for w in "$@"; do case "$w" in -o* | --output* | -L* | --log-file*) return 1 ;; esac; done
+      return 0
+      ;;
+    supabase)
+      # db dump -f, gen ... -o: the named file is written.
+      for w in "$@"; do case "$w" in -f* | --file* | -o* | --output*) return 1 ;; esac; done
+      return 0
+      ;;
     find)
-      # find only reads, unless it deletes or runs commands on what it finds.
-      [[ " $* " != *" -delete "* && " $* " != *" -exec"* && " $* " != *" -ok"* ]]
-      return
+      # find only reads, unless it deletes, runs commands, or prints into a file.
+      for w in "$@"; do case "$w" in -delete | -exec* | -ok* | -fprint* | -fls) return 1 ;; esac; done
+      return 0
       ;;
     git)
+      # --output writes the result to a file; grep -O / --open-files-in-pager runs a program.
+      for w in "$@"; do case "$w" in --output* | -O* | --open-files-in-pager*) return 1 ;; esac; done
       case "$sub" in
         add | commit | diff | log | show | blame | status | ls-files | ls-tree | cat-file | grep) return 0 ;;
       esac

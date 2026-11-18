@@ -234,6 +234,22 @@ bash_case allow 'find . -name "*.sql"'
 bash_case allow "cd $repo"
 bash_case allow 'git checkout main'
 
+echo "guard rails: readers that can write"
+bash_case deny 'find . -maxdepth 0 -fprint .claude/hooks/guard-bash.sh'
+bash_case deny 'git show HEAD:README.md --output=.claude/hooks/guard-bash.sh'
+bash_case deny 'git diff --output=.claude/settings.json HEAD~1'
+bash_case deny 'psql "$DB_URL" -o .claude/settings.json -c "select 1"'
+bash_case deny 'less -o .claude/hooks/lib.sh README.md'
+bash_case deny 'tree -o .claude/hooks/lib.sh .'
+bash_case deny "supabase db dump -f $merged"
+bash_case deny "supabase db dump --file=$merged"
+bash_case deny "psql \"\$DB_URL\" -c 'select 1' -o $merged"
+bash_case allow 'find .claude -name "*.sh"'
+bash_case allow 'git show HEAD:.claude/hooks/lib.sh'
+bash_case allow 'git diff -- .claude/hooks'
+bash_case allow 'less .claude/hooks/lib.sh'
+bash_case allow "supabase db dump -f supabase/schema.sql"
+
 echo "guards fail closed"
 for hook in guard-bash.sh guard-files.sh; do
   out=$(echo '{"tool_name": "Read", "tool_input": {}}' | CLAUDE_PROJECT_DIR=/nonexistent "$hooks/$hook" 2>/dev/null)
