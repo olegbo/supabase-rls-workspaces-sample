@@ -4,9 +4,11 @@
 -- Access matrix:
 --   a comment is visible exactly when its article is visible to the reader (the policy
 --   reuses kb_articles RLS through a nested exists instead of copying the article rule)
---   member+: comments on articles they can read, edits and deletes own comments
+--   member+: comments on articles they can read; edits and deletes own comments while the
+--            article is readable
 --   admin+:  deletes any comment in the workspace (moderation), edits none
--- Quota: 100 comments per user per rolling hour.
+-- Quota: at most 100 of a user's comments from the last hour exist at once (deleting one
+-- frees its place; edits are not limited).
 
 -- Target of the composite FK below: a comment's workspace must be its article's workspace.
 create unique index kb_articles_id_workspace_id_key on public.kb_articles (id, workspace_id);
