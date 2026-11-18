@@ -133,13 +133,13 @@ select throws_ok(
   $$insert into public.kb_article_comments (workspace_id, article_id, body, created_by)
     values ('10000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000001', 'spoof',
             '00000000-0000-0000-0000-0000000000a1')$$,
-  '42501', null, 'author cannot be spoofed');
+  '42501', 'permission denied for table kb_article_comments', 'author cannot be spoofed');
 
 select throws_ok(
   $$insert into public.kb_article_comments (workspace_id, article_id, body, created_at)
     values ('10000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000001', 'old',
             now() - interval '2 hours')$$,
-  '42501', null, 'created_at cannot be set, so comments cannot be backdated out of the quota');
+  '42501', 'permission denied for table kb_article_comments', 'created_at cannot be set, so comments cannot be backdated out of the quota');
 
 select throws_ok(
   $$insert into public.kb_article_comments (workspace_id, article_id, body)
@@ -182,12 +182,12 @@ select results_eq(
 select throws_ok(
   $$update public.kb_article_comments set article_id = '20000000-0000-0000-0000-000000000003'
     where body = 'm1 edited'$$,
-  '42501', null, 'a comment cannot be moved to another article');
+  '42501', 'permission denied for table kb_article_comments', 'a comment cannot be moved to another article');
 
 select throws_ok(
   $$update public.kb_article_comments set workspace_id = '10000000-0000-0000-0000-000000000002'
     where body = 'm1 edited'$$,
-  '42501', null, 'a comment cannot be moved to another workspace');
+  '42501', 'permission denied for table kb_article_comments', 'a comment cannot be moved to another workspace');
 
 -- @policy kb_article_comments "authors and admins delete comments" deny
 select results_eq(

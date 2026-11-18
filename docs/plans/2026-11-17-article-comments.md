@@ -246,8 +246,8 @@ The file is wrapped in `begin; ... rollback;`. The numbers below are the asserti
 8. member cannot comment on a draft they cannot read (art02): `throws_ok(..., '42501', 'new row violates row-level security policy for table "kb_article_comments"')`, `@policy kb_article_comments "members comment on readable articles" deny`
 9. member cannot comment in a foreign workspace (w2, art04): same `throws_ok`, `@policy kb_article_comments "members comment on readable articles" deny`
 10. member cannot comment on a foreign article under their own workspace id (w1, art04): same `throws_ok`, `@policy kb_article_comments "members comment on readable articles" deny`
-11. member cannot spoof the author (insert with `created_by = a1`): `throws_ok(..., '42501')`, untagged (column grant)
-12. member cannot set `created_at`, so no backdating past the quota: `throws_ok(..., '42501')`, untagged (column grant)
+11. member cannot spoof the author (insert with `created_by = a1`): `throws_ok(..., '42501', 'permission denied for table kb_article_comments')`, untagged (column grant; the message tells a missing grant from an RLS denial, which raises 42501 too)
+12. member cannot set `created_at`, so no backdating past the quota: `throws_ok(..., '42501', 'permission denied for table kb_article_comments')`, untagged (column grant; the message tells a missing grant from an RLS denial, which raises 42501 too)
 13. member cannot post an empty body (art01): `throws_ok(..., '23514')`, untagged
 14. a body of exactly 1 character is accepted: `lives_ok('x')` on art05, so the art01 counts below stay the same, untagged
 15. member cannot post a whitespace-only body (`E' \n\t '`, art01): `throws_ok(..., '23514')`, untagged
@@ -255,8 +255,8 @@ The file is wrapped in `begin; ... rollback;`. The numbers below are the asserti
 17. member cannot post a body of 4001 characters (art01): `throws_ok(repeat('b', 4001), '23514')`, untagged
 18. author can edit own comment and `updated_at` is refreshed: `results_eq('with r as (update ... set body = ''m1 edited'' where body = ''m1 old comment'' returning updated_at > created_at) select * from r', array[true])`, `@policy kb_article_comments "authors edit own comments" allow`
 19. member cannot edit someone else's comment (`'m2 comment'`): `results_eq(affected count, array[0])`, `@policy kb_article_comments "authors edit own comments" deny`
-20. member cannot move a comment to another article (`set article_id = art03`): `throws_ok(..., '42501')`, untagged (column grant)
-21. member cannot move a comment to another workspace (`set workspace_id = w2`): `throws_ok(..., '42501')`, untagged (column grant)
+20. member cannot move a comment to another article (`set article_id = art03`): `throws_ok(..., '42501', 'permission denied for table kb_article_comments')`, untagged (column grant; the message tells a missing grant from an RLS denial, which raises 42501 too)
+21. member cannot move a comment to another workspace (`set workspace_id = w2`): `throws_ok(..., '42501', 'permission denied for table kb_article_comments')`, untagged (column grant; the message tells a missing grant from an RLS denial, which raises 42501 too)
 22. member cannot delete someone else's comment (`'m2 comment'`): `results_eq(affected count, array[0])`, `@policy kb_article_comments "authors and admins delete comments" deny`
 23. author can delete own comment (`'m1 comment'`): `results_eq(affected count, array[1])`, `@policy kb_article_comments "authors and admins delete comments" allow`
 
