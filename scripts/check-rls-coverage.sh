@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Fails when, in any application schema (every schema except the system ones and those
-# Supabase manages, so `public`, `private` and any schema added later):
+# Supabase manages, so `public`, `private`, `graphql_public` and any schema added later):
 #   - a table has row level security disabled, or has it enabled but no policy (no table
 #     without a policy), or a foreign table exists (it cannot have RLS)
 #   - a view runs with its owner's rights (no security_invoker), or a materialized view
@@ -28,9 +28,10 @@ db_url=${DB_URL:-$(supabase status -o env 2>/dev/null | sed -n 's/^DB_URL="\(.*\
 
 sql() { psql "$db_url" -v ON_ERROR_STOP=1 -Atq -F $'\t' -c "$1"; }
 
-# Every schema except the system ones and those Supabase manages.
+# Every schema except the system ones and those Supabase manages. graphql_public stays in:
+# PostgREST serves it (supabase/config.toml), so a table there is reachable through the API.
 APP_SCHEMAS="n.nspname not like 'pg\\_%' and n.nspname not in ('information_schema', 'auth',
-  'extensions', 'graphql', 'graphql_public', 'pgbouncer', 'realtime', '_realtime', 'storage',
+  'extensions', 'graphql', 'pgbouncer', 'realtime', '_realtime', 'storage',
   'supabase_functions', 'supabase_migrations', 'vault', 'net', 'cron', 'pgsodium',
   'pgsodium_masks', 'tests')"
 errors=()
