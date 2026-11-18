@@ -171,6 +171,22 @@ path_of() {
   printf '%s' "$w"
 }
 
+# The paths the words may name (see path_of), plus what a glob among them expands to,
+# relative to cwd, the way the shell will expand it: `.c*/settings.json`. Separated by \x1f.
+candidate_paths() {
+  local w p m
+  for w in "$@"; do
+    p=$(path_of "$w")
+    [ -n "$p" ] || continue
+    printf '%s\x1f' "$p"
+    if [[ $p == *[\*\?\[]* ]]; then
+      m=$(cd "$cwd" 2>/dev/null && compgen -G "$p") || m=""
+      [ -z "$m" ] || while IFS= read -r p; do printf '%s\x1f' "$p"; done <<<"$m"
+    fi
+  done
+  return 0
+}
+
 current_branch() { git -C "$cwd" symbolic-ref --short -q HEAD 2>/dev/null || true; }
 
 check_env() {
@@ -276,10 +292,12 @@ check_git_push() {
 }
 
 check_migrations() {
-  local w rel touches=0 redirect=0
-  for w in "$@"; do
-    if is_output_redirect "$w"; then redirect=1; fi
-    w=$(path_of "$w")
+  local w rel out touches=0 redirect=0
+  local -a paths=()
+  for w in "$@"; do if is_output_redirect "$w"; then redirect=1; fi; done
+  out=$(candidate_paths "$@")
+  IFS=$'\x1f' read -ra paths <<<"$out" || true
+  for w in ${paths[@]+"${paths[@]}"}; do
     [[ $w == *migrations* || $cwd != "$root" ]] || continue # after a cd, any word may
     rel=$(relative_to_project "$root" "$w" "$cwd") || continue
     case "$rel" in
@@ -295,11 +313,13 @@ check_migrations() {
 # The guard rails themselves: the agent must not be able to switch them off, by editing
 # them or by deleting or moving a directory that holds them.
 check_guard_rails() {
-  local w lw rel touches=0 redirect=0 holds=0 removes=0
+  local w lw rel out touches=0 redirect=0 holds=0 removes=0
+  local -a paths=()
   if removes_or_moves "$@"; then removes=1; fi
-  for w in "$@"; do
-    if is_output_redirect "$w"; then redirect=1; fi
-    w=$(path_of "$w")
+  for w in "$@"; do if is_output_redirect "$w"; then redirect=1; fi; done
+  out=$(candidate_paths "$@")
+  IFS=$'\x1f' read -ra paths <<<"$out" || true
+  for w in ${paths[@]+"${paths[@]}"}; do
     [ -n "$w" ] || continue
     lw=$(lower "$w")
     # Words that may name a guard rail; after a cd away from the root, any word may.

@@ -295,6 +295,16 @@ bash_case allow 'cd supabase && ls migrations'
 bash_case allow 'cd /tmp && rm -f settings.json'
 bash_case allow "bash -c 'cd /tmp' && cat .claude/settings.json"
 
+echo "globs that expand onto a guard rail or a merged migration"
+touch "$repo/.claude/settings.json" "$repo/.claude/hooks/guard-bash.sh"
+bash_case deny 'cp /dev/null .c*/settings.json'
+bash_case deny 'cp /dev/null .claude/hook?/guard-bash.sh'
+bash_case deny 'rm -rf .cl*'
+bash_case deny 'cp /dev/null supabase/migr*/20260101000000_init.sql'
+bash_case allow 'ls .c*'
+bash_case allow 'cat supabase/migr*/*.sql'
+rm "$repo/.claude/settings.json" "$repo/.claude/hooks/guard-bash.sh"
+
 echo "guard rails: readers that can write"
 bash_case deny 'find . -maxdepth 0 -fprint .claude/hooks/guard-bash.sh'
 bash_case deny 'git show HEAD:README.md --output=.claude/hooks/guard-bash.sh'
