@@ -49,6 +49,10 @@ printf -- '-- @policy kb_articles "admins delete articles" allow\nselect set_con
 assert_eq 1 "$(check)" 'a tag that is not above an assertion fails'
 
 reset_tests
+printf -- '-- @policy kb_articles "admins delete articles" allow\n\nselect ok(true);\n' >"$tests/99_x.test.sql"
+assert_eq 1 "$(check)" 'a tag separated from its assertion by a blank line fails'
+
+reset_tests
 printf -- '-- @policy kb_articles "admins delete articles" allow\n-- @policy kb_articles "admins delete articles" deny\nselect ok(true);\n' \
   >"$tests/99_x.test.sql"
 assert_eq 1 "$(check)" 'one assertion tagged both allow and deny fails'

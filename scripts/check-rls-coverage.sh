@@ -84,7 +84,7 @@ tags=$(perl -e '
       }
       my ($t, $p, $k) = ($1, $2, $3);
       my $j = $i + 1;
-      $j++ while $j <= $#l && $l[$j] =~ /^\s*(--\s*\@policy\b.*)?$/;
+      $j++ while $j <= $#l && $l[$j] =~ /^\s*--\s*\@policy\b/; # further tags, never blank lines
       if ($j <= $#l && $l[$j] =~ $assert) {
         # One assertion cannot prove both the allowed and the denied case of a policy.
         my $other = $k eq "allow" ? "deny" : "allow";
