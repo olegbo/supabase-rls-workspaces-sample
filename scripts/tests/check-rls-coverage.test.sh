@@ -11,11 +11,14 @@ export DB_URL
 sql() { psql "$DB_URL" -v ON_ERROR_STOP=1 -q -c "$1" >/dev/null; }
 
 tests=$(mktemp -d)
+# The foreign-table case needs postgres_fdw; drop it afterwards only if this run created it.
+fdw_before=$(psql "$DB_URL" -Atqc "select count(*) from pg_extension where extname = 'postgres_fdw'")
 cleanup() {
   rm -rf "$tests"
   sql 'drop view if exists public.rls_probe_view; drop table if exists public.rls_probe;
        drop foreign table if exists public.rls_probe_ft; drop server if exists rls_probe_srv;
        drop schema if exists rls_probe_extra cascade;'
+  if [ "$fdw_before" = 0 ]; then sql 'drop extension if exists postgres_fdw'; fi
 }
 trap cleanup EXIT
 
