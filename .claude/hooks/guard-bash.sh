@@ -39,6 +39,8 @@ API_WRITE="GitHub API writes are blocked, except replies on review threads \
 or ask the user."
 REMOTE_DB="psql to a host other than the local stack is blocked: hosted databases change \
 only through CI."
+WHOLE_TREE="git reset --hard, git clean and git stash without paths rewrite the whole working \
+tree, the guard rails included. Ask the user to run them, or name the paths (git stash push -- <paths>)."
 
 # Commands that only read the paths they are given. Anything else counts as a write.
 # Some readers have options that write a file or run a program; with one of those, the
@@ -340,6 +342,44 @@ check_guard_rails() {
   if ! read_only_command "$@"; then deny "$GUARD_RULE"; fi
 }
 
+# git commands that rewrite the whole working tree without naming a path, so the path checks
+# never see the guard rails they reach.
+check_whole_tree() {
+  [[ ${1##*/} == git ]] || return 0
+  local -a words=("$@")
+  local n=$# i=0 w
+  case "$(git_subcommand "$@")" in
+    clean) deny "$WHOLE_TREE" ;;
+    reset)
+      for w in "$@"; do
+        case "$w" in --hard | --merge | --keep) deny "$WHOLE_TREE" ;; esac
+      done
+      ;;
+    stash)
+      while [ $i -lt "$n" ] && [ "${words[i]}" != stash ]; do i=$((i + 1)); done
+      i=$((i + 1))
+      case "${words[i]:-}" in
+        # These do not take the working tree as it is now.
+        list | show | pop | apply | drop | clear | branch | create | store) return 0 ;;
+        push) i=$((i + 1)) ;;
+        save) deny "$WHOLE_TREE" ;;
+      esac
+      # Allowed only with a pathspec, which check_guard_rails then sees.
+      for ((; i < n; i++)); do
+        w=${words[i]}
+        case "$w" in
+          -m | --message) i=$((i + 1)) ;;
+          --pathspec-from-file*) deny "$WHOLE_TREE" ;; # paths the hook cannot see
+          -*) ;;
+          *) return 0 ;;
+        esac
+      done
+      deny "$WHOLE_TREE"
+      ;;
+  esac
+  return 0
+}
+
 check_psql() {
   local w host
   [[ ${1##*/} == psql || ${1##*/} == pg_restore ]] || return 0
@@ -495,6 +535,7 @@ analyze() {
     check_guard_rails "${words[@]}"
     check_psql "${words[@]}"
     check_gh "${words[@]}"
+    check_whole_tree "${words[@]}"
   done <<<"$segments"
 }
 

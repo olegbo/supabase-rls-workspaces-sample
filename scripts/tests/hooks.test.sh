@@ -305,6 +305,21 @@ bash_case allow 'ls .c*'
 bash_case allow 'cat supabase/migr*/*.sql'
 rm "$repo/.claude/settings.json" "$repo/.claude/hooks/guard-bash.sh"
 
+echo "git commands that rewrite the whole working tree"
+bash_case deny 'git reset --hard HEAD~5'
+bash_case deny 'git -C . reset --hard'
+bash_case deny 'git clean -fdx'
+bash_case deny 'git stash'
+bash_case deny 'git stash -u'
+bash_case deny 'git stash push --include-untracked'
+bash_case deny 'git stash push --pathspec-from-file=list.txt'
+bash_case allow 'git reset HEAD~1'
+bash_case allow 'git reset -q'
+bash_case allow 'git stash list'
+bash_case allow 'git stash pop'
+bash_case allow 'git stash push -q scripts/check-rls-coverage.sh'
+bash_case allow 'git stash push -m wip -- README.md'
+
 echo "guard rails: readers that can write"
 bash_case deny 'find . -maxdepth 0 -fprint .claude/hooks/guard-bash.sh'
 bash_case deny 'git show HEAD:README.md --output=.claude/hooks/guard-bash.sh'
