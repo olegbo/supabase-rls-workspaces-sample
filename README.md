@@ -59,7 +59,7 @@ The hierarchy is strict: you manage only roles below your own.
   - Comments go with their article and workspace; they stay, without an author, when the account is deleted.
   - Authors edit and delete their own comments only while they can read the article, so unpublishing an article freezes its comments for their authors. Admins can still delete them. Both policies check the article themselves: a statement with no `WHERE` does not bring in the read policy.
   - Bodies are plain text, 1 to 4000 characters, not only whitespace. Clients must render them as text, never as HTML.
-- **Quotas.** Each user can send 20 invites per hour, each workspace can have 100 pending invites, each user can create 10 workspaces, and each user can post 100 comments per hour across all workspaces. Signup and email rates use Supabase's `[auth.rate_limit]`.
+- **Quotas.** Each user can send 20 invites per hour, each workspace can have 100 pending invites, each user can create 10 workspaces, and each user can have at most 100 comments from the last hour across all workspaces (deleting one frees its place; edits are not limited). Signup and email rates use Supabase's `[auth.rate_limit]`.
 - **Auth config is part of the security model.** Invites trust `email_confirmed_at`, which means nothing if Supabase confirms every signup on its own. `enable_confirmations = true` is committed, and a test fails if it is turned off. Anonymous sign-ins are off, and passwords need 8 characters.
 - **The Edge Function holds no privileges.** `invite-member` runs with the caller's JWT, never the service role, so RLS decides whether the caller may invite.
   - It authenticates before reading the body.

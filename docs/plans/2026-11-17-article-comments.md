@@ -19,7 +19,7 @@ The feature request, as acceptance criteria. Section 6 maps each to the assertio
 | R5 | No comment reaches or is reached from another workspace | Composite FK to `kb_articles (id, workspace_id)`; policies on `workspace_id` | 10, 21, 25–29, 49 |
 | R6 | Comments go with their article and workspace; they survive the author leaving or deleting the account | `on delete cascade` from the article; `on delete set null` on `created_by` | 41, 42, 50, 51 |
 | R7 | Plain text, 1 to 4000 characters, not only whitespace | Check constraint | 13–17 |
-| R8 | At most 100 comments per user per rolling hour, also under concurrency | `before insert` trigger with a per-author advisory lock | 12, 52–55, Deno race test |
+| R8 | At most 100 of a user's comments from the last rolling hour exist at once, also under concurrency | `before insert` trigger with a per-author advisory lock | 12, 52–55, Deno race test |
 | R9 | Listing comments stays fast at scale | Indexes; plan-regression assertions in 04 | 04: three new assertions |
 
 ## 3. Access matrix
@@ -392,6 +392,7 @@ The quota under concurrency cannot be tested in one pgTAP transaction. The autho
 7. **Migration lock on `kb_articles`.** `create unique index kb_articles_id_workspace_id_key` takes a SHARE lock, blocking article writes while it builds. That is brief at the scale of the README's benchmark (around 600k rows; this demo has no production data), and `concurrently` is unavailable inside a migration transaction. With a hosted project, check its size before deploying.
 8. **Editing and deleting comments on a hidden article.** *Decided at plan approval, corrected in PR review:* comments on a hidden article are frozen for their author: no edit (assertion 47) and no delete (48); admins can still delete them. The first decision let authors delete them, but every API delete has a filter, which brings in the read policy and hides those rows, so it could not work as written.
 9. **Plain text rendering is a client responsibility.** The database stores raw text and cannot prevent XSS. The UI must render comment bodies as text.
+10. **What the quota limits.** *Raised in PR review, accepted:* it counts the author's comments from the last hour that still exist, the same way the invite quota counts invites. Deleting a comment frees its place, so post-delete-repost loops are not capped, and edits are not limited at all. The goal is to stop one member from burying an article or growing the database, which this does: deleted rows take no space, and an edit rewrites one row. Counting attempts would need a per-author counter that deletes do not decrement, and rate-limiting edits a second trigger; both are left for when abuse shows up, and are better handled per IP at the API gateway.
 
 ## 10. Architect review
 
