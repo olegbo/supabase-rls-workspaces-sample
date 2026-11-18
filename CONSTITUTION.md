@@ -62,4 +62,7 @@ in CI, and credentials for hosted projects that exist only in CI.
 1. No secret enters the repository or its history; `.env` files are never read by agents.
 2. Credentials for hosted projects live in CI, not on developers' machines.
 
-Enforced by: gitleaks over the full history in CI, `.gitignore`, the guard hooks.
+Enforced by: gitleaks over the full history in CI, `.gitignore`, and the guard hooks, which
+refuse literal `.env` paths; a path assembled at run time gets past them (README, "Limits of
+the guard rails"). Local `.env` files hold only local-stack values: credentials for hosted
+projects live in CI (5.2).
