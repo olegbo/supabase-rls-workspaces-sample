@@ -7,7 +7,7 @@
 -- are paired with an allowed case on the same row.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(54);
+select plan(55);
 
 -- Fixtures (as postgres, RLS does not apply) ------------------------------------
 --   acme  (w1): a1 owner, ad admin, b1 b2 b3 f5 members
@@ -434,6 +434,15 @@ from generate_series(1, 99) g;
 set local role authenticated;
 select set_config('request.jwt.claims',
   '{"sub":"00000000-0000-0000-0000-0000000000b3","role":"authenticated"}', true);
+
+-- A PostgREST bulk POST is one multi-row INSERT. The row trigger must see the rows inserted
+-- earlier in the same statement (it does while the function is volatile), so two rows at
+-- 99 are refused together; the 100th comment below then shows that neither was kept.
+select throws_ok(
+  $$insert into public.kb_article_comments (workspace_id, article_id, body)
+    select '10000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000005', 'bulk ' || g
+    from generate_series(1, 2) g$$,
+  'PT429', 'comment rate limit exceeded', 'a two-row insert at 99 is refused as a whole');
 
 select lives_ok(
   $$insert into public.kb_article_comments (workspace_id, article_id, body)

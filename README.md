@@ -10,7 +10,7 @@ Contents:
 | Migration: workspace-scoped articles | `supabase/migrations/20261110120100_kb_articles.sql` |
 | Migration: comments on articles | `supabase/migrations/20261117120000_kb_article_comments.sql` |
 | Edge Function: `invite-member` | `supabase/functions/invite-member/` |
-| Database tests (pgTAP, 186 assertions incl. a plan regression test and edge cases) | `supabase/tests/database/` |
+| Database tests (pgTAP, 187 assertions incl. a plan regression test and edge cases) | `supabase/tests/database/` |
 | Concurrency and auth-config tests (Deno, 6) | `supabase/tests/deno/` |
 | Function tests (36): handler, config, adapters against the live stack, end to end | `supabase/functions/invite-member/*.test.ts` |
 | Coverage gates | `scripts/plpgsql-coverage.sh`, `scripts/ts-coverage.sh` |

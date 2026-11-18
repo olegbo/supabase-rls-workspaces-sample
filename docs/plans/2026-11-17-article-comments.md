@@ -19,7 +19,7 @@ The feature request, as acceptance criteria. Section 6 maps each to the assertio
 | R5 | No comment reaches or is reached from another workspace | Composite FK to `kb_articles (id, workspace_id)`; policies on `workspace_id` | 10, 21, 25–29, 49 |
 | R6 | Comments go with their article and workspace; they survive the author leaving or deleting the account | `on delete cascade` from the article; `on delete set null` on `created_by` | 41, 42, 50, 51 |
 | R7 | Plain text, 1 to 4000 characters, not only whitespace | Check constraint | 13–17 |
-| R8 | At most 100 comments per user per rolling hour, also under concurrency | `before insert` trigger with a per-author advisory lock | 12, 52–54, Deno race test |
+| R8 | At most 100 comments per user per rolling hour, also under concurrency | `before insert` trigger with a per-author advisory lock | 12, 52–55, Deno race test |
 | R9 | Listing comments stays fast at scale | Indexes; plan-regression assertions in 04 | 04: three new assertions |
 
 ## 3. Access matrix
@@ -139,7 +139,7 @@ create trigger kb_article_comments_before_insert
 
 **Why `security definer`.** With invoker rights, RLS would hide the user's own comments on articles they can no longer read, so the count would be too low. With `created_by = null` (inserts without a JWT, such as fixtures or the service role) the trigger returns at once.
 
-**Coverage.** The function has three paths: no author (hit by the 04 plan fixture, which inserts without a JWT), the raise (assertion 53) and the normal return (assertion 52). All are hit, so PL/pgSQL coverage stays at 100%. `touch_updated_at` is already covered.
+**Coverage.** The function has three paths: no author (hit by the 04 plan fixture, which inserts without a JWT), the raise (assertions 52 and 54) and the normal return (assertion 53). All are hit, so PL/pgSQL coverage stays at 100%. `touch_updated_at` is already covered.
 
 ## 5. Grants and policies
 
@@ -211,7 +211,7 @@ grant update (body) on public.kb_article_comments to authenticated;
 
 ## 6. Tests and check step
 
-### `supabase/tests/database/06_article_comments.test.sql` (new, `select plan(54)`)
+### `supabase/tests/database/06_article_comments.test.sql` (new, `select plan(55)`)
 
 The file is wrapped in `begin; ... rollback;`. The numbers below are the assertion order in the file.
 
@@ -317,9 +317,10 @@ As postgres: `update kb_articles set published = false where id = art01`. Then a
 
 **Quota** (as postgres, with `created_by = b3` written out because `request.jwt.claims` set earlier in the transaction still applies: insert 50 b3 comments on art05 at `now() - interval '61 minutes'`, one at exactly `now() - interval '1 hour'`, then 99 at `now() - interval '30 minutes'`; as b3)
 
-52. b3's 100th comment within an hour is accepted: `lives_ok`, untagged. Hits the trigger's return branch.
-53. b3's 101st comment within an hour is refused: `throws_ok(..., 'PT429', 'comment rate limit exceeded')`, untagged. Hits the raise branch. The rows at 61 minutes and at exactly one hour pin both edges of the window: a wider window, or `>=` instead of `>`, would count them and refuse the 100th comment.
-54. the quota is per user, so another member is unaffected (b1 on art05): `lives_ok`, untagged
+52. a two-row insert at 99 is refused as a whole (a PostgREST bulk POST is one multi-row INSERT): `throws_ok(insert ... select ... from generate_series(1, 2), 'PT429', 'comment rate limit exceeded')`, untagged. The row trigger sees rows inserted earlier in the same statement because the function is volatile; marked `stable`, it would let both through. Assertion 53 then shows neither row was kept.
+53. b3's 100th comment within an hour is accepted: `lives_ok`, untagged. Hits the trigger's return branch.
+54. b3's 101st comment within an hour is refused: `throws_ok(..., 'PT429', 'comment rate limit exceeded')`, untagged. Hits the raise branch. The rows at 61 minutes and at exactly one hour pin both edges of the window: a wider window, or `>=` instead of `>`, would count them and refuse the 100th comment.
+55. the quota is per user, so another member is unaffected (b1 on art05): `lives_ok`, untagged
 
 **Tag tally** (every policy has at least one allow and one deny):
 
@@ -365,7 +366,7 @@ The quota under concurrency cannot be tested in one pgTAP transaction. The autho
    - a comments row in the role table
    - a "Design decisions" bullet on the composite FK, RLS inherited from articles, the quota and its lock
    - Quotas: 100 comments per hour per user; concurrency: two comments at the quota edge at once
-   - counts: pgTAP 129 → 186, Deno tests 5 → 6, PL/pgSQL functions 6 → 7, RLS policies 13 → 17
+   - counts: pgTAP 129 → 187, Deno tests 5 → 6, PL/pgSQL functions 6 → 7, RLS policies 13 → 17
 
    Then run `supabase db reset`, `supabase test db`, `scripts/check-rls-coverage.sh`, the Deno DB tests, `scripts/plpgsql-coverage.sh 100`, `supabase db lint --level warning --fail-on warning && supabase db advisors`, and `scripts/check-migrations.sh origin/main`. CI goes green.
 4. Follow-ups from `/review` and `claude-review`, one commit per fix.
@@ -375,7 +376,7 @@ The quota under concurrency cannot be tested in one pgTAP transaction. The autho
 | Step | Hours | What drives it |
 |---|---|---|
 | Plan and architect review | 1.5 | The access matrix and the inherited-visibility design; checking plans on 100k rows |
-| Tests | 3 | 54 pgTAP assertions with exact counts, unmasked write denials, the race test with two connections, and a mutation run per new test |
+| Tests | 3 | 55 pgTAP assertions with exact counts, unmasked write denials, the race test with two connections, and a mutation run per new test |
 | Migration and README | 1.5 | Small DDL; most of the time is the quota trigger and the coverage gate |
 | Review fixes | 1–2 | Depends on what review finds |
 | **Total** | **7–8** | |
