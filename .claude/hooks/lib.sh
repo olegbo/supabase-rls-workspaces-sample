@@ -72,18 +72,59 @@ fail_closed() {
   trap refuse_on_error EXIT
 }
 
-# The guard rails: settings that wire the hooks, and the hooks themselves. A person
-# changes them; the agent must not be able to switch them off.
+# Lowercase, for paths on case-insensitive filesystems (macOS by default). Works in bash 3.2,
+# which has no ${x,,}.
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# The guard rails: settings that wire the hooks, the hooks themselves, and the state the Stop
+# hook trusts (a green fingerprint there skips the checks). A person changes them; the agent
+# must not be able to switch them off. Compared case-insensitively:
+# on macOS, .claude/Settings.json is the same file as .claude/settings.json.
 is_guard_rail() {
-  case "$1" in
+  case "$(lower "$1")" in
     .claude/settings.json | .claude/settings.local.json | .claude/hooks | .claude/hooks/ | .claude/hooks/*) return 0 ;;
+    .claude/.state | .claude/.state/ | .claude/.state/*) return 0 ;;
+  esac
+  return 1
+}
+
+# A project-relative directory that contains guard rails: deleting or moving it takes them
+# along. The project root and directories above it are checked by absolute path instead.
+holds_guard_rails() {
+  case "$(lower "$1")" in
+    . | ./ | .claude | .claude/ | .claude/. | ./.claude | ./.claude/) return 0 ;;
   esac
   return 1
 }
 
 # shellcheck disable=SC2034 # used by the scripts that source this file
-GUARD_RULE="The guard rails (.claude/settings.json, .claude/settings.local.json, .claude/hooks/) \
-are changed by a person, not by the agent. Ask the user to make this change."
+GUARD_RULE="The guard rails (.claude/settings.json, .claude/settings.local.json, .claude/hooks/, \
+.claude/.state/, and ~/.claude/settings*.json) are changed by a person, not by the agent. \
+Ask the user to make this change."
+
+# The path made absolute (~ expanded, relative to $2) with its directory resolved. The file
+# itself need not exist.
+absolute_path() {
+  local path=$1 cwd=$2 dir
+  [[ $path == '~'* ]] && path="$HOME${path#'~'}"
+  [[ $path == /* ]] || path="$cwd/$path"
+  dir=$(dirname -- "$path")
+  if [ -d "$dir" ]; then path="$(cd "$dir" && pwd -P)/$(basename -- "$path")"; fi
+  printf '%s' "$path"
+}
+
+# User-level settings outside the project switch its hooks off just as well
+# (disableAllHooks), so they are guard rails too. Takes an absolute path.
+is_user_guard_rail() {
+  local home p
+  home=$(cd "$HOME" 2>/dev/null && pwd -P) || home=$HOME
+  home=$(lower "$home")
+  p=$(lower "$1")
+  case "$p" in
+    "$home/.claude/settings.json" | "$home/.claude/settings.local.json") return 0 ;;
+  esac
+  return 1
+}
 
 # shellcheck disable=SC2034 # used by the scripts that source this file
 MIGRATION_RULE="Merged migrations are immutable: they may already be applied to production. \

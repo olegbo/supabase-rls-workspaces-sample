@@ -212,6 +212,137 @@ file_case deny Write '{"file_path": ".claude/hooks/new.sh", "content": "x"}'
 file_case allow Edit '{"file_path": ".claude/agents/planner.md", "old_string": "a", "new_string": "b"}'
 file_case allow Read '{"file_path": ".claude/hooks/lib.sh"}'
 
+echo "guard rails: deleting or moving a directory that holds them"
+mkdir -p "$repo/.claude/hooks"
+bash_case deny 'rm -rf .claude'
+bash_case deny 'rm -rf .claude/'
+bash_case deny 'mv .claude /tmp/claude-off'
+bash_case deny "rm -rf $repo/.claude"
+bash_case deny 'chmod -R a-x .claude'
+bash_case deny 'rm -rf .'
+bash_case deny "rm -rf $repo"
+bash_case deny "mv $repo /tmp/elsewhere"
+bash_case deny "rm -rf $(dirname "$repo")"
+bash_case deny 'find . -name "*.sh" -delete'
+bash_case deny 'git checkout -- .'
+bash_case deny 'git rm -r .claude'
+bash_case allow 'rm -rf node_modules'
+bash_case allow 'rm -rf /tmp/build-cache'
+bash_case allow 'ls -la .claude'
+bash_case allow 'git add .'
+bash_case allow 'find . -name "*.sql"'
+bash_case allow "cd $repo"
+bash_case allow 'git checkout main'
+
+echo "redirections with a file descriptor or &"
+bash_case deny 'echo {} 1>.claude/settings.json'
+bash_case deny 'echo {} 1> .claude/settings.json'
+bash_case deny 'cat x &>.claude/hooks/guard-bash.sh'
+bash_case deny 'echo x 2>>.claude/hooks/lib.sh'
+bash_case deny 'cat 0<.env'
+bash_case deny 'cat 0< supabase/functions/.env'
+bash_case deny "echo 'drop table t;' 1>>$merged"
+bash_case allow 'ls 2>/dev/null'
+bash_case allow 'supabase test db 2>&1'
+bash_case allow 'cat 0<.claude/settings.json'
+
+echo "guard rails: any letter case (case-insensitive filesystems)"
+file_case deny Write '{"file_path": ".claude/Settings.json", "content": "{}"}'
+file_case deny Edit '{"file_path": ".Claude/hooks/lib.sh", "old_string": "a", "new_string": "b"}'
+bash_case deny 'cp x .claude/SETTINGS.json'
+bash_case deny 'rm -rf .CLAUDE'
+bash_case allow 'cat .claude/Settings.json'
+
+echo "guard rails: user-level settings"
+bash_case deny "echo '{\"disableAllHooks\": true}' > ~/.claude/settings.json"
+bash_case deny "cp x $HOME/.claude/settings.local.json"
+bash_case deny "sed -i '' 's/a/b/' ~/.Claude/Settings.json"
+file_case deny Write "{\"file_path\": \"$HOME/.claude/settings.json\", \"content\": \"{}\"}"
+file_case deny Edit "{\"file_path\": \"$HOME/.claude/settings.local.json\", \"old_string\": \"a\", \"new_string\": \"b\"}"
+bash_case allow 'cat ~/.claude/settings.json'
+file_case allow Read "{\"file_path\": \"$HOME/.claude/settings.json\"}"
+file_case allow Write '{"file_path": "/tmp/settings.json", "content": "{}"}'
+
+echo "wrappers with options, git global options"
+bash_case deny 'env -i rm -rf .claude'
+bash_case deny 'env -u HOME FOO=1 rm -rf .claude'
+bash_case deny 'nice -n 5 rm -rf .claude'
+bash_case deny 'timeout -s KILL 5 rm -rf .claude'
+bash_case deny 'sudo -u root rm -rf .claude'
+bash_case deny 'git -C . rm -r .claude'
+bash_case deny 'git --work-tree=. checkout HEAD -- .claude'
+bash_case deny 'timeout --kill-after=1 5 supabase db push'
+bash_case deny 'nice -n 5 git push origin main'
+bash_case allow 'timeout 60 supabase test db'
+bash_case allow 'env -i ls .claude'
+bash_case allow 'git -C . status'
+
+echo "person-only actions: GraphQL from a file, --approve=true"
+bash_case deny 'gh api graphql -F query=@m.graphql'
+bash_case deny 'gh api graphql --field query=@m.graphql'
+bash_case deny 'gh api graphql --input m.json'
+bash_case deny 'gh pr review --approve=true 1'
+bash_case allow "gh api graphql -f query='query { viewer { login } }' -F first=10"
+
+echo "a cd earlier in the command line"
+bash_case deny 'cd .claude && rm settings.json'
+bash_case deny 'cd .claude; echo {} > settings.json'
+bash_case deny 'pushd .claude/hooks && rm guard-bash.sh'
+bash_case deny 'cd supabase && rm migrations/20260101000000_init.sql'
+bash_case deny 'cd supabase/migrations && rm 20260101000000_init.sql'
+bash_case deny "cd .. && rm -rf $(basename "$repo")"
+bash_case allow 'cd supabase && ls migrations'
+bash_case allow 'cd /tmp && rm -f settings.json'
+bash_case allow "bash -c 'cd /tmp' && cat .claude/settings.json"
+
+echo "globs that expand onto a guard rail or a merged migration"
+touch "$repo/.claude/settings.json" "$repo/.claude/hooks/guard-bash.sh"
+bash_case deny 'cp /dev/null .c*/settings.json'
+bash_case deny 'cp /dev/null .claude/hook?/guard-bash.sh'
+bash_case deny 'rm -rf .cl*'
+bash_case deny 'cp /dev/null supabase/migr*/20260101000000_init.sql'
+bash_case allow 'ls .c*'
+bash_case allow 'cat supabase/migr*/*.sql'
+rm "$repo/.claude/settings.json" "$repo/.claude/hooks/guard-bash.sh"
+
+echo "git commands that rewrite the whole working tree"
+bash_case deny 'git reset --hard HEAD~5'
+bash_case deny 'git -C . reset --hard'
+bash_case deny 'git clean -fdx'
+bash_case deny 'git stash'
+bash_case deny 'git stash -u'
+bash_case deny 'git stash push --include-untracked'
+bash_case deny 'git stash push --pathspec-from-file=list.txt'
+bash_case allow 'git reset HEAD~1'
+bash_case allow 'git reset -q'
+bash_case allow 'git stash list'
+bash_case allow 'git stash pop'
+bash_case allow 'git stash push -q scripts/check-rls-coverage.sh'
+bash_case allow 'git stash push -m wip -- README.md'
+
+echo "guard rails: the Stop hook's state"
+bash_case deny 'echo abc > .claude/.state/green'
+bash_case deny 'rm -rf .claude/.state'
+file_case deny Write '{"file_path": ".claude/.state/green", "content": "abc"}'
+bash_case allow 'tail -n 40 .claude/.state/pgtap.log'
+file_case allow Read '{"file_path": ".claude/.state/pgtap.log"}'
+
+echo "guard rails: readers that can write"
+bash_case deny 'find . -maxdepth 0 -fprint .claude/hooks/guard-bash.sh'
+bash_case deny 'git show HEAD:README.md --output=.claude/hooks/guard-bash.sh'
+bash_case deny 'git diff --output=.claude/settings.json HEAD~1'
+bash_case deny 'psql "$DB_URL" -o .claude/settings.json -c "select 1"'
+bash_case deny 'less -o .claude/hooks/lib.sh README.md'
+bash_case deny 'tree -o .claude/hooks/lib.sh .'
+bash_case deny "supabase db dump -f $merged"
+bash_case deny "supabase db dump --file=$merged"
+bash_case deny "psql \"\$DB_URL\" -c 'select 1' -o $merged"
+bash_case allow 'find .claude -name "*.sh"'
+bash_case allow 'git show HEAD:.claude/hooks/lib.sh'
+bash_case allow 'git diff -- .claude/hooks'
+bash_case allow 'less .claude/hooks/lib.sh'
+bash_case allow "supabase db dump -f supabase/schema.sql"
+
 echo "guards fail closed"
 for hook in guard-bash.sh guard-files.sh; do
   out=$(echo '{"tool_name": "Read", "tool_input": {}}' | CLAUDE_PROJECT_DIR=/nonexistent "$hooks/$hook" 2>/dev/null)

@@ -2,6 +2,8 @@
 # PreToolUse(Read|Edit|Write|MultiEdit|NotebookEdit|Grep|Glob). Blocks:
 #   - any access to .env files (except .env.example): they hold secrets
 #   - edits to migrations that already exist on origin/main
+#   - edits to the guard rails (.claude/settings*.json, .claude/hooks/, and the user-level
+#     ~/.claude/settings*.json): a person changes them
 set -euo pipefail
 # shellcheck source=lib.sh
 . "$(dirname "$0")/lib.sh"
@@ -36,6 +38,7 @@ case "$tool" in
   *) exit 0 ;;
 esac
 
+if is_user_guard_rail "$(absolute_path "$path" "$cwd")"; then deny "$GUARD_RULE"; fi
 rel=$(relative_to_project "$root" "$path" "$cwd") || exit 0
 if is_guard_rail "$rel"; then deny "$GUARD_RULE"; fi
 if is_merged_migration "$root" "$rel"; then deny "$MIGRATION_RULE"; fi

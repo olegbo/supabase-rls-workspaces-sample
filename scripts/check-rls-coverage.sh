@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Fails when, in any application schema (every schema except the system ones and those
-# Supabase manages, so `public`, `private` and any schema added later):
+# Supabase manages, so `public`, `private`, `graphql_public` and any schema added later):
 #   - a table has row level security disabled, or has it enabled but no policy (no table
 #     without a policy), or a foreign table exists (it cannot have RLS)
 #   - a view runs with its owner's rights (no security_invoker), or a materialized view
@@ -12,9 +12,10 @@
 #   select results_eq(...);
 # Tables outside `public` are named with their schema: -- @policy hr.salaries "..." deny
 # Tags that name no existing policy fail too, so renamed policies do not go stale.
-# A deny tag on UPDATE or DELETE must not be masked by the read policy: target a row the
-# caller can read, or leave out the WHERE clause (a WHERE on a column brings in the read
-# policy, so a broken write policy would go unnoticed).
+# Not checked here, only in review: what the tagged assertion proves. A deny tag on UPDATE or
+# DELETE must not be masked by the read policy: target a row the caller can read, or leave
+# out the WHERE clause (a WHERE on a column brings in the read policy, so a broken write
+# policy would go unnoticed). This script checks that the tags exist and name real policies.
 #
 # Usage: scripts/check-rls-coverage.sh   (needs the local stack with migrations applied)
 # Env:   DB_URL (default: from supabase status), TESTS_DIR (default: supabase/tests/database)
@@ -27,9 +28,10 @@ db_url=${DB_URL:-$(supabase status -o env 2>/dev/null | sed -n 's/^DB_URL="\(.*\
 
 sql() { psql "$db_url" -v ON_ERROR_STOP=1 -Atq -F $'\t' -c "$1"; }
 
-# Every schema except the system ones and those Supabase manages.
+# Every schema except the system ones and those Supabase manages. graphql_public stays in:
+# PostgREST serves it (supabase/config.toml), so a table there is reachable through the API.
 APP_SCHEMAS="n.nspname not like 'pg\\_%' and n.nspname not in ('information_schema', 'auth',
-  'extensions', 'graphql', 'graphql_public', 'pgbouncer', 'realtime', '_realtime', 'storage',
+  'extensions', 'graphql', 'pgbouncer', 'realtime', '_realtime', 'storage',
   'supabase_functions', 'supabase_migrations', 'vault', 'net', 'cron', 'pgsodium',
   'pgsodium_masks', 'tests')"
 errors=()
@@ -75,16 +77,28 @@ tags=$(perl -e '
   for my $f (@ARGV) {
     open my $fh, "<", $f or die "$f: $!";
     my @l = <$fh>;
+    # Lines inside a /* ... */ block never run: a tag or an assertion there proves nothing.
+    my (@in_block, $open);
+    for my $k (0 .. $#l) {
+      (my $code = $l[$k]) =~ s/--.*$//;
+      my $was = $open;
+      while ($code =~ m{(/\*|\*/)}g) { $open = $1 eq "/*" ? 1 : 0 }
+      $in_block[$k] = $was || $l[$k] =~ m{^\s*/\*} ? 1 : 0;
+    }
     for my $i (0 .. $#l) {
       next unless $l[$i] =~ /^\s*--\s*\@policy\b/;
+      if ($in_block[$i]) {
+        printf "err\t%s:%d: tag inside a /* */ block comment, which never runs\n", $f, $i + 1;
+        next;
+      }
       if ($l[$i] !~ /^\s*--\s*\@policy\s+([a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)?)\s+"([^"]+)"\s+(allow|deny)\s*$/) {
         printf "err\t%s:%d: malformed tag, expected: -- \@policy <table> \"<policy>\" allow|deny\n", $f, $i + 1;
         next;
       }
       my ($t, $p, $k) = ($1, $2, $3);
       my $j = $i + 1;
-      $j++ while $j <= $#l && $l[$j] =~ /^\s*(--\s*\@policy\b.*)?$/;
-      if ($j <= $#l && $l[$j] =~ $assert) {
+      $j++ while $j <= $#l && $l[$j] =~ /^\s*--\s*\@policy\b/; # further tags, never blank lines
+      if ($j <= $#l && !$in_block[$j] && $l[$j] =~ $assert) {
         # One assertion cannot prove both the allowed and the denied case of a policy.
         my $other = $k eq "allow" ? "deny" : "allow";
         if ($seen{"$f:$j\t$t\t$p\t$other"}) {

@@ -5,7 +5,9 @@
 #   - force pushes, pushes to main, --all / --mirror
 #   - commands that touch .env files (except .env.example)
 #   - commands that modify merged migrations, or the guard rails themselves
-#     (.claude/settings*.json, .claude/hooks/)
+#     (.claude/settings*.json, .claude/hooks/, the user-level ~/.claude/settings*.json),
+#     including deleting or moving a directory that holds them (.claude, the project root,
+#     anything above it)
 #   - psql against a host other than the local stack (a deploy without the CLI)
 #   - gh actions that belong to a person: merging, approving, secrets, repository settings,
 #     and any GitHub API write except replies on review threads
@@ -37,19 +39,42 @@ API_WRITE="GitHub API writes are blocked, except replies on review threads \
 or ask the user."
 REMOTE_DB="psql to a host other than the local stack is blocked: hosted databases change \
 only through CI."
+WHOLE_TREE="git reset --hard, git clean and git stash without paths rewrite the whole working \
+tree, the guard rails included. Ask the user to run them, or name the paths (git stash push -- <paths>)."
 
 # Commands that only read the paths they are given. Anything else counts as a write.
+# Some readers have options that write a file or run a program; with one of those, the
+# command counts as a write.
 read_only_command() {
-  local first=${1:-} sub=${2:-}
+  local first=${1:-} sub=${2:-} w
   case "$first" in
-    cat | head | tail | less | more | grep | rg | diff | wc | ls | stat | file | shasum | \
-      sha256sum | md5 | md5sum | psql | supabase | echo | printf | tree | shellcheck | jq) return 0 ;;
+    cat | head | tail | grep | diff | wc | ls | stat | shasum | sha256sum | md5 | md5sum | \
+      echo | printf | shellcheck | jq | cd | pushd) return 0 ;;
+    less | more)
+      for w in "$@"; do case "$w" in -o* | -O* | --log-file* | --LOG-FILE*) return 1 ;; esac; done
+      return 0
+      ;;
+    tree) for w in "$@"; do [ "$w" = -o ] && return 1; done; return 0 ;;
+    rg) for w in "$@"; do [[ $w == --pre || $w == --pre=* ]] && return 1; done; return 0 ;;
+    file) for w in "$@"; do [ "$w" = -C ] && return 1; done; return 0 ;;
+    psql)
+      # -f reads a script; -o and -L write their output to a file.
+      for w in "$@"; do case "$w" in -o* | --output* | -L* | --log-file*) return 1 ;; esac; done
+      return 0
+      ;;
+    supabase)
+      # db dump -f, gen ... -o: the named file is written.
+      for w in "$@"; do case "$w" in -f* | --file* | -o* | --output*) return 1 ;; esac; done
+      return 0
+      ;;
     find)
-      # find only reads, unless it deletes or runs commands on what it finds.
-      [[ " $* " != *" -delete "* && " $* " != *" -exec"* && " $* " != *" -ok"* ]]
-      return
+      # find only reads, unless it deletes, runs commands, or prints into a file.
+      for w in "$@"; do case "$w" in -delete | -exec* | -ok* | -fprint* | -fls) return 1 ;; esac; done
+      return 0
       ;;
     git)
+      # --output writes the result to a file; grep -O / --open-files-in-pager runs a program.
+      for w in "$@"; do case "$w" in --output* | -O* | --open-files-in-pager*) return 1 ;; esac; done
       case "$sub" in
         add | commit | diff | log | show | blame | status | ls-files | ls-tree | cat-file | grep) return 0 ;;
       esac
@@ -58,12 +83,110 @@ read_only_command() {
   return 1
 }
 
+# The git subcommand, past git's global options (-C <dir>, -c <key=value>, --work-tree=...).
+git_subcommand() {
+  local i
+  for ((i = 2; i <= $#; i++)); do
+    case "${!i}" in
+      -C | -c | --git-dir | --work-tree | --namespace | --exec-path | --super-prefix) i=$((i + 1)) ;;
+      -*) ;;
+      *)
+        printf '%s' "${!i}"
+        return 0
+        ;;
+    esac
+  done
+}
+
+# Commands that delete, move or change the permissions of the paths they are given.
+removes_or_moves() {
+  case "${1##*/}" in
+    rm | rmdir | unlink | mv | chmod | chown | chgrp | chflags | ln | rsync | shred | trash) return 0 ;;
+    find) [[ " $* " == *" -delete "* || " $* " == *" -exec"* || " $* " == *" -ok"* ]] && return 0 ;;
+    git) case "$(git_subcommand "$@")" in rm | mv | clean | checkout | restore) return 0 ;; esac ;;
+  esac
+  return 1
+}
+
+# Drops leading VAR=value assignments and wrapper commands with their options, which do not
+# change what runs: `env -i NAME=x rm ...`, `nice -n 5 rm ...`, `timeout -s KILL 5 rm ...`.
+# Prints the remaining words, separated by \x1f like the splitter's output.
+strip_wrappers() {
+  local -a w=("$@")
+  local cmd
+  while [ ${#w[@]} -gt 0 ]; do
+    cmd=${w[0]##*/}
+    if [[ ${w[0]} =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+      w=("${w[@]:1}")
+    elif [[ $cmd =~ ^(env|sudo|command|exec|time|nohup|nice|ionice|stdbuf|timeout|npx|bunx|caffeinate)$ ]]; then
+      w=("${w[@]:1}")
+      # `command -v x` only looks x up; nothing runs.
+      if [ "$cmd" = command ] && [[ ${w[0]:-} == -v || ${w[0]:-} == -V ]]; then return 0; fi
+      while [ ${#w[@]} -gt 0 ] && [[ ${w[0]} == -* ]]; do
+        case "$cmd ${w[0]}" in
+          # Options that take a separate value.
+          "env -u" | "env -C" | "env --unset" | "env --chdir" | "nice -n" | "nice --adjustment" | \
+            "sudo -u" | "sudo -g" | "sudo -C" | "sudo -h" | "sudo -p" | "sudo -U" | "sudo -r" | \
+            "sudo -t" | "sudo -D" | "timeout -s" | "timeout -k" | "timeout --signal" | \
+            "timeout --kill-after" | "exec -a" | "ionice -c" | "ionice -n" | "ionice -p" | \
+            "stdbuf -i" | "stdbuf -o" | "stdbuf -e" | "npx -p" | "npx --package" | "time -o" | \
+            "time -f") w=("${w[@]:2}") ;;
+          *) w=("${w[@]:1}") ;;
+        esac
+      done
+      # timeout's duration comes before the command.
+      if [ "$cmd" = timeout ] && [ ${#w[@]} -gt 0 ]; then w=("${w[@]:1}"); fi
+    else
+      break
+    fi
+  done
+  [ ${#w[@]} -gt 0 ] && printf '%s\x1f' "${w[@]}"
+  return 0
+}
+
+# True when the path (absolute, or relative to cwd) is the project root or a directory
+# above it. Paths that do not exist as directories are not.
+holds_project() {
+  local abs=$1
+  [[ $abs == '~'* ]] && abs="$HOME${abs#'~'}"
+  [[ $abs == /* ]] || abs="$cwd/$abs"
+  abs=$(cd "$abs" 2>/dev/null && pwd -P) || return 1
+  [[ $root == "$abs" || $root == "$abs"/* ]]
+}
+
+# A redirection operator at the start of a word, with an optional file-descriptor number
+# or `&`: `>`, `>>`, `<`, `1>`, `2>>`, `0<`, `&>`, `>&`, `<<<`. Group 3 is what follows it.
+REDIRECT_RE='^([0-9]+|&)?([<>]+&?)(.*)$'
+is_redirect() { [[ $1 =~ $REDIRECT_RE ]]; }
+# Output redirections write the path they name.
+is_output_redirect() { [[ $1 =~ $REDIRECT_RE && ${BASH_REMATCH[2]} == *\>* ]]; }
+strip_redirect() {
+  if [[ $1 =~ $REDIRECT_RE ]]; then printf '%s' "${BASH_REMATCH[3]}"; else printf '%s' "$1"; fi
+}
+
 # Paths a word may name: the word itself, without redirections, or the value of an
 # option such as `of=<path>` or `--output=<path>`.
 path_of() {
-  local w=${1#"${1%%[!<>]*}"}
+  local w
+  w=$(strip_redirect "$1")
   [[ $w == *=* ]] && w=${w##*=}
   printf '%s' "$w"
+}
+
+# The paths the words may name (see path_of), plus what a glob among them expands to,
+# relative to cwd, the way the shell will expand it: `.c*/settings.json`. Separated by \x1f.
+candidate_paths() {
+  local w p m
+  for w in "$@"; do
+    p=$(path_of "$w")
+    [ -n "$p" ] || continue
+    printf '%s\x1f' "$p"
+    if [[ $p == *[\*\?\[]* ]]; then
+      m=$(cd "$cwd" 2>/dev/null && compgen -G "$p") || m=""
+      [ -z "$m" ] || while IFS= read -r p; do printf '%s\x1f' "$p"; done <<<"$m"
+    fi
+  done
+  return 0
 }
 
 current_branch() { git -C "$cwd" symbolic-ref --short -q HEAD 2>/dev/null || true; }
@@ -75,11 +198,11 @@ check_env() {
   case "${1:-} ${2:-}" in echo\ * | printf\ * | "git commit" | "git tag") text_only=1 ;; esac
   for w in "$@"; do
     file_arg=0
-    case "$prev" in \<* | \>* | -F | --file) file_arg=1 ;; esac
-    [[ $w == [\<\>]* ]] && file_arg=1
+    case "$prev" in -F | --file) file_arg=1 ;; esac
+    if is_redirect "$prev" || is_redirect "$w"; then file_arg=1; fi
     prev=$w
     [ $text_only = 1 ] && [ $file_arg = 0 ] && continue
-    w=${w#"${w%%[!<>]*}"} # drop redirection characters: <.env, >.env
+    w=$(strip_redirect "$w") # <.env, 0<.env, >.env, &>.env
     [ -n "$w" ] || continue
     IFS='=' read -ra parts <<<"$w"
     for part in "${parts[@]}"; do
@@ -171,11 +294,13 @@ check_git_push() {
 }
 
 check_migrations() {
-  local w rel touches=0 redirect=0
-  for w in "$@"; do
-    if [[ $w == \>* ]]; then redirect=1; fi
-    w=$(path_of "$w")
-    [[ $w == *migrations* ]] || continue
+  local w rel out touches=0 redirect=0
+  local -a paths=()
+  for w in "$@"; do if is_output_redirect "$w"; then redirect=1; fi; done
+  out=$(candidate_paths "$@")
+  IFS=$'\x1f' read -ra paths <<<"$out" || true
+  for w in ${paths[@]+"${paths[@]}"}; do
+    [[ $w == *migrations* || $cwd != "$root" ]] || continue # after a cd, any word may
     rel=$(relative_to_project "$root" "$w" "$cwd") || continue
     case "$rel" in
       supabase/migrations | supabase/migrations/ | supabase/migrations/*[*?]*) touches=1 ;;
@@ -187,19 +312,72 @@ check_migrations() {
   if ! read_only_command "$@"; then deny "$MIGRATION_RULE"; fi
 }
 
-# The guard rails themselves: the agent must not be able to switch them off.
+# The guard rails themselves: the agent must not be able to switch them off, by editing
+# them or by deleting or moving a directory that holds them.
 check_guard_rails() {
-  local w rel touches=0 redirect=0
-  for w in "$@"; do
-    if [[ $w == \>* ]]; then redirect=1; fi
-    w=$(path_of "$w")
-    [[ $w == *.claude* || $w == *hooks* || $w == *settings* ]] || continue
-    rel=$(relative_to_project "$root" "$w" "$cwd") || continue
-    if is_guard_rail "$rel"; then touches=1; fi
+  local w lw rel out touches=0 redirect=0 holds=0 removes=0
+  local -a paths=()
+  if removes_or_moves "$@"; then removes=1; fi
+  for w in "$@"; do if is_output_redirect "$w"; then redirect=1; fi; done
+  out=$(candidate_paths "$@")
+  IFS=$'\x1f' read -ra paths <<<"$out" || true
+  for w in ${paths[@]+"${paths[@]}"}; do
+    [ -n "$w" ] || continue
+    lw=$(lower "$w")
+    # Words that may name a guard rail; after a cd away from the root, any word may.
+    if [[ $lw == *.claude* || $lw == *hooks* || $lw == *settings* || $w == . || $w == ./ ||
+      $cwd != "$root" ]] &&
+      rel=$(relative_to_project "$root" "$w" "$cwd"); then
+      if is_guard_rail "$rel"; then touches=1; fi
+      if holds_guard_rails "$rel"; then holds=1; fi
+    fi
+    if [[ $lw == *settings* ]] && is_user_guard_rail "$(absolute_path "$w" "$cwd")"; then touches=1; fi
+    # Any word of a command that deletes or moves: `cd .. && rm -rf <project>` names the
+    # project root by its bare name.
+    if [ $removes = 1 ] && holds_project "$w"; then holds=1; fi
   done
+  if [ $holds = 1 ] && [ $removes = 1 ]; then deny "$GUARD_RULE"; fi
   [ $touches = 1 ] || return 0
   if [ $redirect = 1 ]; then deny "$GUARD_RULE"; fi
   if ! read_only_command "$@"; then deny "$GUARD_RULE"; fi
+}
+
+# git commands that rewrite the whole working tree without naming a path, so the path checks
+# never see the guard rails they reach.
+check_whole_tree() {
+  [[ ${1##*/} == git ]] || return 0
+  local -a words=("$@")
+  local n=$# i=0 w
+  case "$(git_subcommand "$@")" in
+    clean) deny "$WHOLE_TREE" ;;
+    reset)
+      for w in "$@"; do
+        case "$w" in --hard | --merge | --keep) deny "$WHOLE_TREE" ;; esac
+      done
+      ;;
+    stash)
+      while [ $i -lt "$n" ] && [ "${words[i]}" != stash ]; do i=$((i + 1)); done
+      i=$((i + 1))
+      case "${words[i]:-}" in
+        # These do not take the working tree as it is now.
+        list | show | pop | apply | drop | clear | branch | create | store) return 0 ;;
+        push) i=$((i + 1)) ;;
+        save) deny "$WHOLE_TREE" ;;
+      esac
+      # Allowed only with a pathspec, which check_guard_rails then sees.
+      for ((; i < n; i++)); do
+        w=${words[i]}
+        case "$w" in
+          -m | --message) i=$((i + 1)) ;;
+          --pathspec-from-file*) deny "$WHOLE_TREE" ;; # paths the hook cannot see
+          -*) ;;
+          *) return 0 ;;
+        esac
+      done
+      deny "$WHOLE_TREE"
+      ;;
+  esac
+  return 0
 }
 
 check_psql() {
@@ -242,7 +420,7 @@ check_gh() {
       "ruleset create" | "ruleset delete") deny "$PERSON" ;;
     "pr review")
       for w in "${words[@]}"; do
-        case "$w" in --approve | -a) deny "$PERSON" ;; esac
+        case "$w" in --approve | --approve=* | -a) deny "$PERSON" ;; esac
       done
       ;;
   esac
@@ -265,8 +443,15 @@ check_gh() {
   method=$(tr '[:lower:]' '[:upper:]' <<<"${method:-$([ $writes = 1 ] && echo POST || echo GET)}")
   [ "$method" = GET ] && return 0
   if [ "$endpoint" = graphql ]; then
-    for w in "${words[@]}"; do
-      if [[ $w == *mutation* ]]; then deny "$API_WRITE"; fi
+    # Only an inline query can be checked: a query read from a file (-F query=@file) or from
+    # stdin (--input) could hold a mutation.
+    for ((i = 0; i < n; i++)); do
+      w=${words[i]}
+      if [[ $w == *mutation* || $w == --input || $w == --input=* ]]; then deny "$API_WRITE"; fi
+      case "$w" in
+        -F | --field) if [[ ${words[i + 1]:-} == *=@* ]]; then deny "$API_WRITE"; fi ;;
+        -F?* | --field=*) if [[ $w == *=@* ]]; then deny "$API_WRITE"; fi ;;
+      esac
     done
     return 0
   fi
@@ -279,24 +464,31 @@ check_gh() {
 # Checks every simple command in a command line. Strings run by `sh -c` / `bash -c` /
 # `eval` are checked the same way, wherever the shell appears (`timeout 5 bash -c ...`).
 analyze() {
-  local seg i j w segments
-  local -a words
+  local seg i j w segments out saved_cwd
+  local -a words stripped
   # Split first: if the splitter fails, refuse (fail closed) instead of seeing no commands.
   segments=$(printf '%s' "$1" | perl "$(dirname "$0")/split-command.pl") || exit 1
   while IFS= read -r seg; do
     [ -n "$seg" ] || continue
     IFS=$'\x1f' read -ra words <<<"$seg"
     # Leading VAR=value assignments and wrappers do not change what runs.
-    while [ ${#words[@]} -gt 0 ]; do
-      if [[ ${words[0]} =~ ^[A-Za-z_][A-Za-z0-9_]*= || ${words[0]} =~ ^(env|sudo|command|exec|time|nohup|nice|npx|bunx)$ ]]; then
-        words=("${words[@]:1}")
-      elif [ "${words[0]}" = timeout ] && [ ${#words[@]} -gt 1 ]; then
-        words=("${words[@]:2}")
-      else
-        break
+    stripped=()
+    # Not `IFS=... read < <(strip_wrappers ...)`: bash 3.2 applies that IFS inside the
+    # substitution too, and "${w[@]:1}" then joins the words.
+    out=$(strip_wrappers "${words[@]}")
+    IFS=$'\x1f' read -ra stripped <<<"$out" || true
+    [ ${#stripped[@]} -gt 0 ] || continue
+    words=("${stripped[@]}")
+    # `cd x && rm y`: later relative paths resolve against x. A target the hook cannot know
+    # (`cd -`, `cd "$dir"`) leaves the directory as it was: a value in a variable is a
+    # known limit.
+    if [[ ${words[0]} == cd || ${words[0]} == pushd ]]; then
+      w=${words[1]:-$HOME}
+      [[ $w == -- ]] && w=${words[2]:-$HOME}
+      if [[ $w != -* && $w != *\$* && $w != *\`* ]]; then
+        w=$(cd "$cwd" 2>/dev/null && cd "$(absolute_path "$w" "$cwd")" 2>/dev/null && pwd -P) && cwd=$w
       fi
-    done
-    [ ${#words[@]} -gt 0 ] || continue
+    fi
 
     # A shell with no script or -c reads its commands from stdin (`... | bash`), which
     # cannot be checked.
@@ -319,7 +511,12 @@ analyze() {
       case "${words[i]##*/}" in
         sh | bash | zsh | dash | ksh)
           for ((j = i + 1; j < ${#words[@]} - 1; j++)); do
-            if [[ ${words[j]} == -*c* && ${words[j]} != --* ]]; then analyze "${words[j + 1]}"; fi
+            # The inner shell's cd does not move the outer command line.
+            if [[ ${words[j]} == -*c* && ${words[j]} != --* ]]; then
+              saved_cwd=$cwd
+              analyze "${words[j + 1]}"
+              cwd=$saved_cwd
+            fi
           done
           ;;
         eval) analyze "${words[*]:i+1}" ;;
@@ -338,6 +535,7 @@ analyze() {
     check_guard_rails "${words[@]}"
     check_psql "${words[@]}"
     check_gh "${words[@]}"
+    check_whole_tree "${words[@]}"
   done <<<"$segments"
 }
 

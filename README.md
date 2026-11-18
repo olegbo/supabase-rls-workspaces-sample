@@ -111,7 +111,7 @@ This repository is set up for work with Claude Code. The agent gets written rule
 
 | Rule | Where to look | How it is enforced or shown |
 |---|---|---|
-| Row level security on every table; no table without a policy | [`scripts/check-rls-coverage.sh`](scripts/check-rls-coverage.sh), [`CONSTITUTION.md`](CONSTITUTION.md) §1 | Required check `test`. Every application schema is covered (`public`, `private`, and any schema added later): a table without RLS or without a policy fails. A self-test proves each failure mode. |
+| Row level security on every table; no table without a policy | [`scripts/check-rls-coverage.sh`](scripts/check-rls-coverage.sh), [`CONSTITUTION.md`](CONSTITUTION.md) §1 | Required check `test`. Every application schema is covered (`public`, `private`, `graphql_public`, which the API also serves, and any schema added later): a table without RLS or without a policy fails. A self-test proves each failure mode. |
 | A pgTAP test for every policy; acceptance criteria as tests | [`supabase/tests/database/`](supabase/tests/database/), the same script | Each policy needs a tagged test for an allowed and a denied case, or `test` fails. The planner maps each acceptance criterion to the assertion that proves it. |
 | CI runs all tests on every pull request; red = not finished; "done" only with test output | [`.github/workflows/ci.yml`](.github/workflows/ci.yml), [`.github/pull_request_template.md`](.github/pull_request_template.md), [`verify-before-stop.sh`](.claude/hooks/verify-before-stop.sh) | Four required checks. The PR template asks for the test output. The agent cannot report work as done while the suites for its changes fail. |
 | Pull requests only, one branch per task | Branch protection, [`guard-bash.sh`](.claude/hooks/guard-bash.sh) | `main` accepts only pull requests with all four checks green and an approval, administrators included; no force pushes. Locally the hook refuses pushes to `main` and force pushes. |
@@ -127,7 +127,7 @@ This repository is set up for work with Claude Code. The agent gets written rule
 | Part | Where | What it does |
 |---|---|---|
 | Rules | [`CONSTITUTION.md`](CONSTITUTION.md), [`CLAUDE.md`](CLAUDE.md) | The invariants, then how to work: stack, check commands, conventions, the order plan → tests → code → review → PR. |
-| Hooks | [`.claude/settings.json`](.claude/settings.json), [`.claude/hooks/`](.claude/hooks/) | Refuse deploys, pushes to `main`, force pushes, `.env` access, edits to merged migrations, and the actions that belong to a person (merging, approving, secrets, repository settings). Lint every edited file. Run the affected suites before the agent reports "done". The hooks protect themselves: only a person can change them. 177 tests in [`scripts/tests/hooks.test.sh`](scripts/tests/hooks.test.sh), run in CI. |
+| Hooks | [`.claude/settings.json`](.claude/settings.json), [`.claude/hooks/`](.claude/hooks/) | Refuse deploys, pushes to `main`, force pushes, `.env` access, edits to merged migrations, and the actions that belong to a person (merging, approving, secrets, repository settings). Lint every edited file. Run the affected suites before the agent reports "done". The hooks protect themselves: only a person can change them. 283 tests in [`scripts/tests/hooks.test.sh`](scripts/tests/hooks.test.sh), run in CI. |
 | Subagents | [`.claude/agents/`](.claude/agents/) | `planner`, `architect`, `database-reviewer`, `security-reviewer`. |
 | Commands | [`.claude/commands/`](.claude/commands/) | `/plan` and `/review`. |
 | MCP | [`.mcp.json`](.mcp.json) | Supabase (the local stack, read-only) and GitHub (read-only, token from `GITHUB_PAT`). |
@@ -140,7 +140,15 @@ This repository is set up for work with Claude Code. The agent gets written rule
 
 ### Limits of the guard rails
 
-- The hooks are guard rails for the agent, not a sandbox. They read commands word by word, so a value hidden in a variable, brace expansion, a here-document or a git alias can get past them, as can a recursive `grep` over the working tree. They also refuse some harmless commands whose text only looks dangerous. What matters is enforced again on the server: branch protection, the required checks, and credentials for hosted projects that exist only in CI.
+- The hooks are guard rails for the agent, not a sandbox. They read commands word by word and refuse what they recognise; they cannot see what a command does once it runs. Known ways past them:
+  - a value hidden in a variable (including `PGHOST` or a psql service file pointing at a remote database), brace expansion, a here-document, a git alias, or a `git -c` setting that runs a command;
+  - code run by an interpreter (`python -c`, `node -e`), by a script, or by a psql meta-command (`\!`); only `.env` paths are looked for inside inline code;
+  - commands that rewrite files without naming them: switching branches, merging, rebasing, cherry-picking, applying a patch or extracting an archive. `git reset --hard`, `git clean` and `git stash` without paths are refused;
+  - a path through a directory that does not exist (`x/../.claude/settings.json`), and a Grep or Glob pattern that matches `.env` without spelling it out;
+  - a recursive `grep` over the working tree, which reads `.env` files along with everything else.
+- The Stop hook lets a second stop through after a failing check when no migration or function code changed (the red step of test-first work), even if the change was to tooling.
+- They also refuse some harmless commands whose text only looks dangerous.
+- What matters is enforced again where the agent cannot reach: branch protection, the required checks, code-owner review, and credentials for hosted projects that exist only in CI. A real boundary on the machine itself would be an OS-level sandbox that denies writes to the guard rails.
 - GitHub runs a pull request's own copy of the workflow, so a pull request could change the review job itself. [`.github/CODEOWNERS`](.github/CODEOWNERS) names an owner for CI, the Claude configuration, the constitution and the guard scripts, and code-owner review makes such changes need that owner's approval.
 
 ## Running it

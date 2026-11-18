@@ -11,11 +11,14 @@ export DB_URL
 sql() { psql "$DB_URL" -v ON_ERROR_STOP=1 -q -c "$1" >/dev/null; }
 
 tests=$(mktemp -d)
+# The foreign-table case needs postgres_fdw; drop it afterwards only if this run created it.
+fdw_before=$(psql "$DB_URL" -Atqc "select count(*) from pg_extension where extname = 'postgres_fdw'")
 cleanup() {
   rm -rf "$tests"
   sql 'drop view if exists public.rls_probe_view; drop table if exists public.rls_probe;
        drop foreign table if exists public.rls_probe_ft; drop server if exists rls_probe_srv;
        drop schema if exists rls_probe_extra cascade;'
+  if [ "$fdw_before" = 0 ]; then sql 'drop extension if exists postgres_fdw'; fi
 }
 trap cleanup EXIT
 
@@ -47,6 +50,14 @@ reset_tests
 printf -- '-- @policy kb_articles "admins delete articles" allow\nselect set_config(%s);\n' "'a', 'b', true" \
   >"$tests/99_x.test.sql"
 assert_eq 1 "$(check)" 'a tag that is not above an assertion fails'
+
+reset_tests
+printf -- '-- @policy kb_articles "admins delete articles" allow\n\nselect ok(true);\n' >"$tests/99_x.test.sql"
+assert_eq 1 "$(check)" 'a tag separated from its assertion by a blank line fails'
+
+reset_tests
+printf -- '/*\n-- @policy kb_articles "admins delete articles" allow\nselect ok(true);\n*/\n' >"$tests/99_x.test.sql"
+assert_eq 1 "$(check)" 'a tag inside a /* */ block comment fails'
 
 reset_tests
 printf -- '-- @policy kb_articles "admins delete articles" allow\n-- @policy kb_articles "admins delete articles" deny\nselect ok(true);\n' \

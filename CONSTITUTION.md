@@ -41,8 +41,10 @@ and Edge Function code), the `verify-before-stop.sh` hook.
 5. A person other than the author approves every pull request.
 
 Enforced by: branch protection (required checks `guards`, `secrets`, `test`, `claude-review`,
-a required approval, administrators included), `.github/pull_request_template.md`,
-`scripts/review-gate.sh`, `.github/CODEOWNERS`.
+a required approval, required review from code owners, administrators included),
+`.github/pull_request_template.md`, `scripts/review-gate.sh`, `.github/CODEOWNERS`. A pull
+request runs its own copy of the CI workflows, so a change to `.github/` could weaken the
+checks that judge it; code-owner review is what catches that.
 
 ## 4. Production is changed only by CI
 
@@ -60,4 +62,7 @@ in CI, and credentials for hosted projects that exist only in CI.
 1. No secret enters the repository or its history; `.env` files are never read by agents.
 2. Credentials for hosted projects live in CI, not on developers' machines.
 
-Enforced by: gitleaks over the full history in CI, `.gitignore`, the guard hooks.
+Enforced by: gitleaks over the full history in CI, `.gitignore`, and the guard hooks, which
+refuse literal `.env` paths; a path assembled at run time gets past them (README, "Limits of
+the guard rails"). Local `.env` files hold only local-stack values: credentials for hosted
+projects live in CI (5.2).
