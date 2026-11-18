@@ -243,12 +243,13 @@ check_migrations() {
 # The guard rails themselves: the agent must not be able to switch them off, by editing
 # them or by deleting or moving a directory that holds them.
 check_guard_rails() {
-  local w rel touches=0 redirect=0 holds=0
+  local w lw rel touches=0 redirect=0 holds=0
   for w in "$@"; do
     if is_output_redirect "$w"; then redirect=1; fi
     w=$(path_of "$w")
     [ -n "$w" ] || continue
-    if [[ $w == *.claude* || $w == *hooks* || $w == *settings* || $w == . || $w == ./ ]] &&
+    lw=$(lower "$w")
+    if [[ $lw == *.claude* || $lw == *hooks* || $lw == *settings* || $w == . || $w == ./ ]] &&
       rel=$(relative_to_project "$root" "$w" "$cwd"); then
       if is_guard_rail "$rel"; then touches=1; fi
       if holds_guard_rails "$rel"; then holds=1; fi

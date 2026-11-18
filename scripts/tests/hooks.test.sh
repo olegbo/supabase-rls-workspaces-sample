@@ -246,6 +246,13 @@ bash_case allow 'ls 2>/dev/null'
 bash_case allow 'supabase test db 2>&1'
 bash_case allow 'cat 0<.claude/settings.json'
 
+echo "guard rails: any letter case (case-insensitive filesystems)"
+file_case deny Write '{"file_path": ".claude/Settings.json", "content": "{}"}'
+file_case deny Edit '{"file_path": ".Claude/hooks/lib.sh", "old_string": "a", "new_string": "b"}'
+bash_case deny 'cp x .claude/SETTINGS.json'
+bash_case deny 'rm -rf .CLAUDE'
+bash_case allow 'cat .claude/Settings.json'
+
 echo "guard rails: readers that can write"
 bash_case deny 'find . -maxdepth 0 -fprint .claude/hooks/guard-bash.sh'
 bash_case deny 'git show HEAD:README.md --output=.claude/hooks/guard-bash.sh'

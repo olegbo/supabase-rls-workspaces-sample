@@ -72,10 +72,15 @@ fail_closed() {
   trap refuse_on_error EXIT
 }
 
+# Lowercase, for paths on case-insensitive filesystems (macOS by default). Works in bash 3.2,
+# which has no ${x,,}.
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
 # The guard rails: settings that wire the hooks, and the hooks themselves. A person
-# changes them; the agent must not be able to switch them off.
+# changes them; the agent must not be able to switch them off. Compared case-insensitively:
+# on macOS, .claude/Settings.json is the same file as .claude/settings.json.
 is_guard_rail() {
-  case "$1" in
+  case "$(lower "$1")" in
     .claude/settings.json | .claude/settings.local.json | .claude/hooks | .claude/hooks/ | .claude/hooks/*) return 0 ;;
   esac
   return 1
@@ -84,7 +89,7 @@ is_guard_rail() {
 # A project-relative directory that contains guard rails: deleting or moving it takes them
 # along. The project root and directories above it are checked by absolute path instead.
 holds_guard_rails() {
-  case "$1" in
+  case "$(lower "$1")" in
     . | ./ | .claude | .claude/ | .claude/. | ./.claude | ./.claude/) return 0 ;;
   esac
   return 1
