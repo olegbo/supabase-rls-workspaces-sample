@@ -7,7 +7,7 @@
 -- are paired with an allowed case on the same row.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(55);
+select plan(57);
 
 -- Fixtures (as postgres, RLS does not apply) ------------------------------------
 --   acme  (w1): a1 owner, ad admin, b1 b2 b3 f5 members
@@ -466,6 +466,19 @@ select lives_ok(
   $$insert into public.kb_article_comments (workspace_id, article_id, body)
     values ('10000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000005', 'b1 here')$$,
   'the quota is per user: another member is not affected');
+
+-- Column grants on update (b1): updating created_at would free quota without deleting
+-- anything, and created_by would hand a comment to someone else.
+select throws_ok(
+  $$update public.kb_article_comments set created_at = now() - interval '2 hours'
+    where body = 'b1 here'$$,
+  '42501', 'permission denied for table kb_article_comments',
+  'created_at cannot be updated, so comments cannot be moved out of the quota window');
+
+select throws_ok(
+  $$update public.kb_article_comments set created_by = '00000000-0000-0000-0000-0000000000a1'
+    where body = 'b1 here'$$,
+  '42501', 'permission denied for table kb_article_comments', 'the author cannot be changed');
 
 select * from finish();
 rollback;
