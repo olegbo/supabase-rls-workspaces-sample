@@ -12,9 +12,10 @@
 #   select results_eq(...);
 # Tables outside `public` are named with their schema: -- @policy hr.salaries "..." deny
 # Tags that name no existing policy fail too, so renamed policies do not go stale.
-# A deny tag on UPDATE or DELETE must not be masked by the read policy: target a row the
-# caller can read, or leave out the WHERE clause (a WHERE on a column brings in the read
-# policy, so a broken write policy would go unnoticed).
+# Not checked here, only in review: what the tagged assertion proves. A deny tag on UPDATE or
+# DELETE must not be masked by the read policy: target a row the caller can read, or leave
+# out the WHERE clause (a WHERE on a column brings in the read policy, so a broken write
+# policy would go unnoticed). This script checks that the tags exist and name real policies.
 #
 # Usage: scripts/check-rls-coverage.sh   (needs the local stack with migrations applied)
 # Env:   DB_URL (default: from supabase status), TESTS_DIR (default: supabase/tests/database)
