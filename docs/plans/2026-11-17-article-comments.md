@@ -351,7 +351,7 @@ This gives 100k comments, one per article. Add `public.kb_article_comments` to t
 
 ### `supabase/tests/deno/comment_quota_race.test.ts` (new)
 
-The quota under concurrency cannot be tested in one pgTAP transaction. The author starts with 99 comments inside the window, and both connections are opened up front. Session 1 inserts and holds its transaction open with `pg_sleep`; session 2 inserts about 100 ms later, while session 1 is still uncommitted. Exactly one insert succeeds, the other gets `PT429` (whichever session wins), and the author ends with exactly 100 comments. Without the lock, session 2 counts 99 as well and both inserts succeed (101). The pattern is the one in `last_owner_race.test.ts`.
+The quota under concurrency cannot be tested in one pgTAP transaction. The author starts with 99 comments inside the window. Session 1 inserts the 100th and keeps its transaction open; only then does session 2 insert. Session 1 commits once session 2 is waiting on a lock (`pg_stat_activity`), or has finished, which happens only when nothing blocks it. The order is fixed, not left to timing: with the lock, session 2 waits, counts 100 and gets `PT429`, and the author ends with exactly 100 comments; without it, session 2 counts 99 and inserts too, and the test fails.
 
 **Unchanged suites:** 01 (RLS on every table; anon has no privileges) and 05 (function execute list) pick up the new table and function automatically, and must still pass. The Edge Function does not change.
 

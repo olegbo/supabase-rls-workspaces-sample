@@ -1,6 +1,10 @@
 // Concurrency check for the comment quota, which pgTAP cannot express (it needs two
-// sessions). The author has 99 comments in the window; two sessions each add one at the same
-// time. Without serialization both count 99 and both insert; exactly one may succeed.
+// sessions). The author has 99 comments in the window. Session 1 inserts the 100th and keeps
+// its transaction open; session 2 inserts while session 1 is uncommitted. Session 1 commits
+// only once session 2 is waiting on a lock, or has already finished, so the order does not
+// depend on timing:
+// - with the per-author lock, session 2 waits, then counts 100 and gets PT429;
+// - without it, session 2 counts 99 (session 1 is not committed) and inserts: the test fails.
 // Skipped unless DB_URL points at a local stack (`supabase status -o env`).
 import { assertEquals } from '@std/assert';
 import postgres from 'postgres';
@@ -11,18 +15,15 @@ function connect() {
   return postgres(dbUrl!, { max: 1, onnotice: () => {} });
 }
 
-type Sql = ReturnType<typeof connect>;
+type Tx = postgres.TransactionSql;
 
-async function comment(sql: Sql, userId: string, ws: string, article: string, holdMs: number) {
-  await sql.begin(async (tx) => {
-    await tx`set local role authenticated`;
-    await tx`select set_config('request.jwt.claims', ${
-      JSON.stringify({ sub: userId, role: 'authenticated' })
-    }, true)`;
-    await tx`insert into public.kb_article_comments (workspace_id, article_id, body)
-             values (${ws}, ${article}, 'race')`;
-    await tx`select pg_sleep(${holdMs / 1000})`;
-  });
+async function insertAs(tx: Tx, userId: string, ws: string, article: string) {
+  await tx`set local role authenticated`;
+  await tx`select set_config('request.jwt.claims', ${
+    JSON.stringify({ sub: userId, role: 'authenticated' })
+  }, true)`;
+  await tx`insert into public.kb_article_comments (workspace_id, article_id, body)
+           values (${ws}, ${article}, 'race')`;
 }
 
 Deno.test({
@@ -46,18 +47,30 @@ Deno.test({
 
     const [s1, s2] = [connect(), connect()];
     try {
-      // Connect both sessions first, so neither start is delayed by connection setup.
-      await Promise.all([s1`select 1`, s2`select 1`]);
-      const first = comment(s1, user, ws, article, 500);
-      await new Promise((r) => setTimeout(r, 100)); // second starts while first is uncommitted
-      const second = comment(s2, user, ws, article, 0);
+      const [{ pid: s2pid }] = await s2`select pg_backend_pid() as pid`;
+      let s2Done = false;
+      let markInserted!: () => void;
+      const inserted = new Promise<void>((resolve) => markInserted = resolve);
+
+      const first = s1.begin(async (tx) => {
+        await insertAs(tx, user, ws, article);
+        markInserted();
+        // Keep the transaction open until session 2 is blocked behind it, or has finished
+        // (which happens only when nothing blocks it).
+        for (let i = 0; i < 500 && !s2Done; i++) {
+          const [{ n }] = await admin`select count(*)::int as n from pg_stat_activity
+                                      where pid = ${s2pid} and wait_event_type = 'Lock'`;
+          if (n > 0) break;
+          await new Promise((r) => setTimeout(r, 10));
+        }
+      });
+      await inserted;
+      const second = s2.begin((tx) => insertAs(tx, user, ws, article))
+        .finally(() => s2Done = true);
       const results = await Promise.allSettled([first, second]);
 
-      // Whichever session wins, exactly one insert may succeed and the other gets PT429.
-      const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
-      assertEquals(results.length - rejected.length, 1);
-      assertEquals(rejected.map((r) => r.reason.code), ['PT429']);
-
+      assertEquals(results.map((r) => r.status), ['fulfilled', 'rejected']);
+      assertEquals((results[1] as PromiseRejectedResult).reason.code, 'PT429');
       const [{ n }] = await admin`select count(*)::int as n from public.kb_article_comments
                                   where created_by = ${user}`;
       assertEquals(n, 100);
