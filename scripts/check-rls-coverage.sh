@@ -77,8 +77,20 @@ tags=$(perl -e '
   for my $f (@ARGV) {
     open my $fh, "<", $f or die "$f: $!";
     my @l = <$fh>;
+    # Lines inside a /* ... */ block never run: a tag or an assertion there proves nothing.
+    my (@in_block, $open);
+    for my $k (0 .. $#l) {
+      (my $code = $l[$k]) =~ s/--.*$//;
+      my $was = $open;
+      while ($code =~ m{(/\*|\*/)}g) { $open = $1 eq "/*" ? 1 : 0 }
+      $in_block[$k] = $was || $l[$k] =~ m{^\s*/\*} ? 1 : 0;
+    }
     for my $i (0 .. $#l) {
       next unless $l[$i] =~ /^\s*--\s*\@policy\b/;
+      if ($in_block[$i]) {
+        printf "err\t%s:%d: tag inside a /* */ block comment, which never runs\n", $f, $i + 1;
+        next;
+      }
       if ($l[$i] !~ /^\s*--\s*\@policy\s+([a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)?)\s+"([^"]+)"\s+(allow|deny)\s*$/) {
         printf "err\t%s:%d: malformed tag, expected: -- \@policy <table> \"<policy>\" allow|deny\n", $f, $i + 1;
         next;
@@ -86,7 +98,7 @@ tags=$(perl -e '
       my ($t, $p, $k) = ($1, $2, $3);
       my $j = $i + 1;
       $j++ while $j <= $#l && $l[$j] =~ /^\s*--\s*\@policy\b/; # further tags, never blank lines
-      if ($j <= $#l && $l[$j] =~ $assert) {
+      if ($j <= $#l && !$in_block[$j] && $l[$j] =~ $assert) {
         # One assertion cannot prove both the allowed and the denied case of a policy.
         my $other = $k eq "allow" ? "deny" : "allow";
         if ($seen{"$f:$j\t$t\t$p\t$other"}) {
