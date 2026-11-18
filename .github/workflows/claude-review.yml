@@ -131,8 +131,11 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
         run: jq -r .summary <<<"$REVIEW_JSON" | gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file -
 
-      # The gate comes from the base branch, so a PR cannot edit it into passing. Only the PR
-      # that introduces it (nothing on the base yet) runs its own copy.
+      # The gate script comes from the base branch, so a PR cannot edit the script into
+      # passing; only the PR that introduces it (nothing on the base yet) runs its own copy.
+      # This workflow file itself runs from the PR, though: a PR can rewrite this step or the
+      # prompt. What stops that is code-owner review on /.github/ (CODEOWNERS, branch
+      # protection), not this job.
       - name: Fail on high-severity or incomplete reviews
         env:
           REVIEW_JSON: ${{ steps.review.outputs.structured_output }}
