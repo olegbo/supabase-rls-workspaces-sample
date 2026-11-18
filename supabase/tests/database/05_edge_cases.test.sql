@@ -97,6 +97,7 @@ select throws_ok($$select public.create_workspace('No sub', 'no-sub')$$,
   'PT401', 'not authenticated', 'create_workspace needs a user id');
 select throws_ok($$select public.accept_workspace_invite('token-revoke')$$,
   'PT401', 'not authenticated', 'accept_workspace_invite needs a user id');
+-- @policy workspaces "members read their workspaces" deny
 select is((select count(*)::int from public.workspaces), 0,
   'a JWT without sub sees no workspaces');
 
@@ -140,13 +141,17 @@ select throws_ok(
 -- Invite revocation -----------------------------------------------------------
 select set_config('request.jwt.claims',
   '{"sub":"00000000-0000-0000-0000-0000000000b1","role":"authenticated"}', true);
+-- Unfiltered on purpose: a WHERE on a column would bring in the read policy, which hides
+-- every invite from members, and mask whatever the delete policy does.
+-- @policy workspace_invites "admins revoke invites" deny
 select results_eq(
-  $$with r as (delete from public.workspace_invites where email = 'revoke-me@example.test' returning 1)
+  $$with r as (delete from public.workspace_invites returning 1)
     select count(*)::int from r$$,
-  array[0], 'member cannot revoke an invite');
+  array[0], 'member cannot revoke any invite');
 
 select set_config('request.jwt.claims',
   '{"sub":"00000000-0000-0000-0000-0000000000d1","role":"authenticated"}', true);
+-- Not tagged: the read policy already hides the row, so this cannot isolate the delete policy.
 select results_eq(
   $$with r as (delete from public.workspace_invites where email = 'revoke-me@example.test' returning 1)
     select count(*)::int from r$$,
@@ -159,6 +164,7 @@ select throws_ok(
 
 select set_config('request.jwt.claims',
   '{"sub":"00000000-0000-0000-0000-0000000000ad","role":"authenticated"}', true);
+-- @policy workspace_invites "admins revoke invites" allow
 select results_eq(
   $$with r as (delete from public.workspace_invites where email = 'revoke-me@example.test' returning 1)
     select count(*)::int from r$$,
@@ -246,12 +252,14 @@ select throws_ok(
 -- Workspace deletion cascades -------------------------------------------------
 select set_config('request.jwt.claims',
   '{"sub":"00000000-0000-0000-0000-0000000000a1","role":"authenticated"}', true);
+-- @policy workspace_members "members leave, managers remove lower roles" allow
 select results_eq(
   $$with r as (delete from public.workspace_members
                where workspace_id = '10000000-0000-0000-0000-000000000001'
                  and user_id = '00000000-0000-0000-0000-0000000000ad' returning 1)
     select count(*)::int from r$$,
   array[1], 'owner can remove an admin');
+-- @policy workspaces "owners delete workspaces" allow
 select results_eq(
   $$with r as (delete from public.workspaces where slug = 'acme' returning 1)
     select count(*)::int from r$$,

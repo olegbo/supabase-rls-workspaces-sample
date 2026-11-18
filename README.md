@@ -9,11 +9,12 @@ Contents:
 | Migration: workspaces, roles, invites, account deletion | `supabase/migrations/20261110120000_workspaces_rbac.sql` |
 | Migration: workspace-scoped articles | `supabase/migrations/20261110120100_kb_articles.sql` |
 | Edge Function: `invite-member` | `supabase/functions/invite-member/` |
-| Database tests (pgTAP, 127 assertions incl. a plan regression test and edge cases) | `supabase/tests/database/` |
+| Database tests (pgTAP, 129 assertions incl. a plan regression test and edge cases) | `supabase/tests/database/` |
 | Concurrency and auth-config tests (Deno, 5) | `supabase/tests/deno/` |
 | Function tests (36): handler, config, adapters against the live stack, end to end | `supabase/functions/invite-member/*.test.ts` |
 | Coverage gates | `scripts/plpgsql-coverage.sh`, `scripts/ts-coverage.sh` |
 | CI | `.github/workflows/ci.yml` |
+| Rules, hooks, subagents, MCP and Claude in CI, and where to look | [AI-assisted development](#ai-assisted-development) |
 
 ## Data model and roles
 
@@ -93,14 +94,63 @@ These turned up while writing the tests, and all are fixed:
 
 A known trade-off: the unique `slug` makes `create_workspace` reveal whether a slug is taken. That is inherent to user-chosen slugs and needs to be shown in the UI anyway.
 
+## AI-assisted development
+
+This repository is set up for work with Claude Code. The agent gets written rules, guard rails that stop it from breaking them, and reviewer subagents; CI repeats the checks on the server, where nothing can be skipped.
+
+### Development rules, and where to look
+
+| Rule | Where to look | How it is enforced or shown |
+|---|---|---|
+| Row level security on every table; no table without a policy | [`scripts/check-rls-coverage.sh`](scripts/check-rls-coverage.sh), [`CONSTITUTION.md`](CONSTITUTION.md) §1 | Required check `test`. Every application schema is covered (`public`, `private`, `graphql_public`, which the API also serves, and any schema added later): a table without RLS or without a policy fails. A self-test proves each failure mode. |
+| A pgTAP test for every policy; acceptance criteria as tests | [`supabase/tests/database/`](supabase/tests/database/), the same script | Each policy needs a tagged test for an allowed and a denied case, or `test` fails. The planner maps each acceptance criterion to the assertion that proves it. |
+| CI runs all tests on every pull request; red = not finished; "done" only with test output | [`.github/workflows/ci.yml`](.github/workflows/ci.yml), [`.github/pull_request_template.md`](.github/pull_request_template.md), [`verify-before-stop.sh`](.claude/hooks/verify-before-stop.sh) | Four required checks. The PR template asks for the test output. The agent cannot report work as done while the suites for its changes fail. |
+| Pull requests only, one branch per task | Branch protection, [`guard-bash.sh`](.claude/hooks/guard-bash.sh) | `main` accepts only pull requests with all four checks green and an approval, administrators included; no force pushes. Locally the hook refuses pushes to `main` and force pushes. |
+| A person approves every pull request | Branch protection, [`.github/CODEOWNERS`](.github/CODEOWNERS) | An approval from someone other than the author. Changes to CI, the Claude configuration, the constitution and the guard scripts need the code owner's approval. Merging and approving are refused to the agent. |
+| AI code review on every pull request; open "high" findings block | [`.github/workflows/claude-review.yml`](.github/workflows/claude-review.yml), [`scripts/review-gate.sh`](scripts/review-gate.sh) | Required check `claude-review`. It also fails when the review is incomplete. The reviewer judges against the base branch's rules and constitution, so a pull request cannot rewrite them for its own review, and it has no write access beyond comments. |
+| No deploy from a laptop; migrations and functions only through CI | [`guard-bash.sh`](.claude/hooks/guard-bash.sh), [`scripts/check-migrations.sh`](scripts/check-migrations.sh) | The hook refuses deploy and remote-project commands, including `psql` to a hosted database. Required check `guards` fails when a merged migration is edited, renamed or deleted. |
+| `CLAUDE.md` and the constitution are binding; plans and specs in `docs/` | [`CONSTITUTION.md`](CONSTITUTION.md), [`CLAUDE.md`](CLAUDE.md), [`docs/plans/`](docs/plans/) | Every Claude Code session, every subagent and the CI reviewer read both. A change that breaks an article of the constitution is a high finding. |
+| A plan before each feature (requirements, tables, policies, check step, effort); building after approval | [`/plan`](.claude/commands/plan.md), [`planner`](.claude/agents/planner.md), [`architect`](.claude/agents/architect.md) | `/plan` writes `docs/plans/<date>-<slug>.md`, has it reviewed by the architect subagent, and stops for approval. |
+| No secrets in the repository; credentials for hosted projects only in CI | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) (`secrets`), [`.gitignore`](.gitignore), [`.mcp.json`](.mcp.json) | gitleaks scans the full history on every pull request and push. The agent cannot read `.env` files. MCP configuration holds no credentials. |
+
+### The agent's tooling
+
+| Part | Where | What it does |
+|---|---|---|
+| Rules | [`CONSTITUTION.md`](CONSTITUTION.md), [`CLAUDE.md`](CLAUDE.md) | The invariants, then how to work: stack, check commands, conventions, the order plan → tests → code → review → PR. |
+| Hooks | [`.claude/settings.json`](.claude/settings.json), [`.claude/hooks/`](.claude/hooks/) | Refuse deploys, pushes to `main`, force pushes, `.env` access, edits to merged migrations, and the actions that belong to a person (merging, approving, secrets, repository settings). Lint every edited file. Run the affected suites before the agent reports "done". The hooks protect themselves: only a person can change them. 283 tests in [`scripts/tests/hooks.test.sh`](scripts/tests/hooks.test.sh), run in CI. |
+| Subagents | [`.claude/agents/`](.claude/agents/) | `planner`, `architect`, `database-reviewer`, `security-reviewer`. |
+| Commands | [`.claude/commands/`](.claude/commands/) | `/plan` and `/review`. |
+| MCP | [`.mcp.json`](.mcp.json) | Supabase (the local stack, read-only) and GitHub (read-only, token from `GITHUB_PAT`). |
+| Claude in CI | [`.github/workflows/claude-review.yml`](.github/workflows/claude-review.yml), [`.github/workflows/claude.yml`](.github/workflows/claude.yml) | Reviews every pull request with the reviewer subagents and comments inline; the required check fails on a high finding. `@claude` in a comment asks Claude for help on an issue or pull request. |
+
+### About this demo
+
+- The setup (rules, hooks, reviewers, CI) arrived as one commit. Later changes to it go through pull requests, like any other change.
+- This demo has no hosted Supabase project, so it has no deploy job and no per-PR preview branch. With a hosted project, migrations, functions and secrets reach it only from CI after merge, and every pull request gets a Supabase preview branch.
+
+### Limits of the guard rails
+
+- The hooks are guard rails for the agent, not a sandbox. They read commands word by word and refuse what they recognise; they cannot see what a command does once it runs. Known ways past them:
+  - a value hidden in a variable (including `PGHOST` or a psql service file pointing at a remote database), brace expansion, a here-document, a git alias, or a `git -c` setting that runs a command;
+  - code run by an interpreter (`python -c`, `node -e`), by a script, or by a psql meta-command (`\!`); only `.env` paths are looked for inside inline code;
+  - commands that rewrite files without naming them: switching branches, merging, rebasing, cherry-picking, applying a patch or extracting an archive. `git reset --hard`, `git clean` and `git stash` without paths are refused;
+  - a path through a directory that does not exist (`x/../.claude/settings.json`), and a Grep or Glob pattern that matches `.env` without spelling it out;
+  - a recursive `grep` over the working tree, which reads `.env` files along with everything else.
+- The Stop hook lets a second stop through after a failing check when no migration or function code changed (the red step of test-first work), even if the change was to tooling.
+- They also refuse some harmless commands whose text only looks dangerous.
+- What matters is enforced again where the agent cannot reach: branch protection, the required checks, code-owner review, and credentials for hosted projects that exist only in CI. A real boundary on the machine itself would be an OS-level sandbox that denies writes to the guard rails.
+- GitHub runs a pull request's own copy of the workflow, so a pull request could change the review job itself. [`.github/CODEOWNERS`](.github/CODEOWNERS) names an owner for CI, the Claude configuration, the constitution and the guard scripts, and code-owner review makes such changes need that owner's approval.
+
 ## Running it
 
 Requires Docker, Supabase CLI 3.x and Deno 2.x.
 
 ```bash
 supabase start -x studio,imgproxy,logflare,vector,supavisor,storage-api,realtime,postgres-meta,mailpit
+# (for the Supabase MCP server, keep studio and postgres-meta: see CLAUDE.md)
 supabase test db                                  # pgTAP
-supabase db lint && supabase db advisors
+supabase db lint --level warning --fail-on warning && supabase db advisors
 
 eval "$(supabase status -o env | sed 's/^/export /')"
 (cd supabase/tests/deno && DB_URL=$DB_URL deno task test)   # concurrency + auth config
