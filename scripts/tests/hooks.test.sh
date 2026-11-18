@@ -253,6 +253,16 @@ bash_case deny 'cp x .claude/SETTINGS.json'
 bash_case deny 'rm -rf .CLAUDE'
 bash_case allow 'cat .claude/Settings.json'
 
+echo "guard rails: user-level settings"
+bash_case deny "echo '{\"disableAllHooks\": true}' > ~/.claude/settings.json"
+bash_case deny "cp x $HOME/.claude/settings.local.json"
+bash_case deny "sed -i '' 's/a/b/' ~/.Claude/Settings.json"
+file_case deny Write "{\"file_path\": \"$HOME/.claude/settings.json\", \"content\": \"{}\"}"
+file_case deny Edit "{\"file_path\": \"$HOME/.claude/settings.local.json\", \"old_string\": \"a\", \"new_string\": \"b\"}"
+bash_case allow 'cat ~/.claude/settings.json'
+file_case allow Read "{\"file_path\": \"$HOME/.claude/settings.json\"}"
+file_case allow Write '{"file_path": "/tmp/settings.json", "content": "{}"}'
+
 echo "guard rails: readers that can write"
 bash_case deny 'find . -maxdepth 0 -fprint .claude/hooks/guard-bash.sh'
 bash_case deny 'git show HEAD:README.md --output=.claude/hooks/guard-bash.sh'

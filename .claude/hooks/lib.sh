@@ -96,8 +96,33 @@ holds_guard_rails() {
 }
 
 # shellcheck disable=SC2034 # used by the scripts that source this file
-GUARD_RULE="The guard rails (.claude/settings.json, .claude/settings.local.json, .claude/hooks/) \
-are changed by a person, not by the agent. Ask the user to make this change."
+GUARD_RULE="The guard rails (.claude/settings.json, .claude/settings.local.json, .claude/hooks/, \
+and ~/.claude/settings*.json) are changed by a person, not by the agent. Ask the user to make \
+this change."
+
+# The path made absolute (~ expanded, relative to $2) with its directory resolved. The file
+# itself need not exist.
+absolute_path() {
+  local path=$1 cwd=$2 dir
+  [[ $path == '~'* ]] && path="$HOME${path#'~'}"
+  [[ $path == /* ]] || path="$cwd/$path"
+  dir=$(dirname -- "$path")
+  if [ -d "$dir" ]; then path="$(cd "$dir" && pwd -P)/$(basename -- "$path")"; fi
+  printf '%s' "$path"
+}
+
+# User-level settings outside the project switch its hooks off just as well
+# (disableAllHooks), so they are guard rails too. Takes an absolute path.
+is_user_guard_rail() {
+  local home p
+  home=$(cd "$HOME" 2>/dev/null && pwd -P) || home=$HOME
+  home=$(lower "$home")
+  p=$(lower "$1")
+  case "$p" in
+    "$home/.claude/settings.json" | "$home/.claude/settings.local.json") return 0 ;;
+  esac
+  return 1
+}
 
 # shellcheck disable=SC2034 # used by the scripts that source this file
 MIGRATION_RULE="Merged migrations are immutable: they may already be applied to production. \

@@ -5,8 +5,9 @@
 #   - force pushes, pushes to main, --all / --mirror
 #   - commands that touch .env files (except .env.example)
 #   - commands that modify merged migrations, or the guard rails themselves
-#     (.claude/settings*.json, .claude/hooks/), including deleting or moving a directory
-#     that holds them (.claude, the project root, anything above it)
+#     (.claude/settings*.json, .claude/hooks/, the user-level ~/.claude/settings*.json),
+#     including deleting or moving a directory that holds them (.claude, the project root,
+#     anything above it)
 #   - psql against a host other than the local stack (a deploy without the CLI)
 #   - gh actions that belong to a person: merging, approving, secrets, repository settings,
 #     and any GitHub API write except replies on review threads
@@ -254,6 +255,7 @@ check_guard_rails() {
       if is_guard_rail "$rel"; then touches=1; fi
       if holds_guard_rails "$rel"; then holds=1; fi
     fi
+    if [[ $lw == *settings* ]] && is_user_guard_rail "$(absolute_path "$w" "$cwd")"; then touches=1; fi
     if [[ $w == /* || $w == . || $w == ./ || $w == .. || $w == ../* || $w == '~'* ]] &&
       holds_project "$w"; then
       holds=1

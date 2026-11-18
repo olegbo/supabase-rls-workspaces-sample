@@ -123,7 +123,8 @@ it; change approach or ask the user.
   other than replies on review threads.
 - `guard-files.sh`: blocks reading or writing `.env` files and editing merged migrations.
 - Both refuse changes to the guard rails themselves (`.claude/settings*.json`,
-  `.claude/hooks/`): a person changes those, outside the agent.
+  `.claude/hooks/`, and the user-level `~/.claude/settings*.json`, which can switch the hooks
+  off too): a person changes those, outside the agent.
 - `lint-file.sh`: after every edit, lints the file (deno fmt/lint, shellcheck, JSON).
   Fix what it reports straight away.
 - `verify-before-stop.sh`: before you finish, runs the suites your changes affect. The
