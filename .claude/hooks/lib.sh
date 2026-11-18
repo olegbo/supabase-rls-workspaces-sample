@@ -81,6 +81,15 @@ is_guard_rail() {
   return 1
 }
 
+# A project-relative directory that contains guard rails: deleting or moving it takes them
+# along. The project root and directories above it are checked by absolute path instead.
+holds_guard_rails() {
+  case "$1" in
+    . | ./ | .claude | .claude/ | .claude/. | ./.claude | ./.claude/) return 0 ;;
+  esac
+  return 1
+}
+
 # shellcheck disable=SC2034 # used by the scripts that source this file
 GUARD_RULE="The guard rails (.claude/settings.json, .claude/settings.local.json, .claude/hooks/) \
 are changed by a person, not by the agent. Ask the user to make this change."

@@ -212,6 +212,28 @@ file_case deny Write '{"file_path": ".claude/hooks/new.sh", "content": "x"}'
 file_case allow Edit '{"file_path": ".claude/agents/planner.md", "old_string": "a", "new_string": "b"}'
 file_case allow Read '{"file_path": ".claude/hooks/lib.sh"}'
 
+echo "guard rails: deleting or moving a directory that holds them"
+mkdir -p "$repo/.claude/hooks"
+bash_case deny 'rm -rf .claude'
+bash_case deny 'rm -rf .claude/'
+bash_case deny 'mv .claude /tmp/claude-off'
+bash_case deny "rm -rf $repo/.claude"
+bash_case deny 'chmod -R a-x .claude'
+bash_case deny 'rm -rf .'
+bash_case deny "rm -rf $repo"
+bash_case deny "mv $repo /tmp/elsewhere"
+bash_case deny "rm -rf $(dirname "$repo")"
+bash_case deny 'find . -name "*.sh" -delete'
+bash_case deny 'git checkout -- .'
+bash_case deny 'git rm -r .claude'
+bash_case allow 'rm -rf node_modules'
+bash_case allow 'rm -rf /tmp/build-cache'
+bash_case allow 'ls -la .claude'
+bash_case allow 'git add .'
+bash_case allow 'find . -name "*.sql"'
+bash_case allow "cd $repo"
+bash_case allow 'git checkout main'
+
 echo "guards fail closed"
 for hook in guard-bash.sh guard-files.sh; do
   out=$(echo '{"tool_name": "Read", "tool_input": {}}' | CLAUDE_PROJECT_DIR=/nonexistent "$hooks/$hook" 2>/dev/null)

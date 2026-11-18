@@ -2,6 +2,7 @@
 # PreToolUse(Read|Edit|Write|MultiEdit|NotebookEdit|Grep|Glob). Blocks:
 #   - any access to .env files (except .env.example): they hold secrets
 #   - edits to migrations that already exist on origin/main
+#   - edits to the guard rails (.claude/settings*.json, .claude/hooks/): a person changes them
 set -euo pipefail
 # shellcheck source=lib.sh
 . "$(dirname "$0")/lib.sh"
