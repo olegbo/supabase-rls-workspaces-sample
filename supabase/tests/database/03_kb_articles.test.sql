@@ -33,9 +33,11 @@ set local role authenticated;
 select set_config('request.jwt.claims',
   '{"sub":"00000000-0000-0000-0000-00000000000c","role":"authenticated"}', true);
 
+-- @policy kb_articles "members read published articles and own drafts" allow
 select results_eq('select title from public.kb_articles order by title', array['Published'],
   'member sees published articles of own workspace only');
 
+-- @policy kb_articles "members create own articles" allow
 select lives_ok(
   $$insert into public.kb_articles (workspace_id, title)
     values ('10000000-0000-0000-0000-000000000001', 'My draft')$$,
@@ -44,21 +46,26 @@ select lives_ok(
 select is((select created_by from public.kb_articles where title = 'My draft'),
   '00000000-0000-0000-0000-00000000000c'::uuid, 'author is set from the JWT');
 
+-- @policy kb_articles "members create own articles" deny
 select throws_ok(
   $$insert into public.kb_articles (workspace_id, title)
     values ('10000000-0000-0000-0000-000000000002', 'Spam')$$,
-  '42501', null, 'member cannot write into a foreign workspace');
+  '42501', 'new row violates row-level security policy for table "kb_articles"',
+  'member cannot write into a foreign workspace');
 
+-- Column grant, not policy: created_by is not insertable.
 select throws_ok(
   $$insert into public.kb_articles (workspace_id, title, created_by)
     values ('10000000-0000-0000-0000-000000000001', 'Spoofed', '00000000-0000-0000-0000-00000000000b')$$,
   '42501', null, 'author cannot be spoofed');
 
+-- @policy kb_articles "authors and admins edit articles" allow
 select results_eq(
   $$with r as (update public.kb_articles set body = 'edited' where title = 'My draft' returning 1)
     select count(*)::int from r$$,
   array[1], 'author can edit own article');
 
+-- @policy kb_articles "authors and admins edit articles" deny
 select results_eq(
   $$with r as (update public.kb_articles set title = 'Edited' where title = 'Published' returning 1)
     select count(*)::int from r$$,
@@ -69,6 +76,7 @@ select throws_ok(
     where title = 'My draft'$$,
   '42501', null, 'articles cannot be moved between workspaces');
 
+-- @policy kb_articles "admins delete articles" deny
 select results_eq(
   $$with r as (delete from public.kb_articles where title = 'My draft' returning 1)
     select count(*)::int from r$$,
@@ -77,12 +85,14 @@ select results_eq(
 -- Another member does not see the draft.
 select set_config('request.jwt.claims',
   '{"sub":"00000000-0000-0000-0000-0000000000c2","role":"authenticated"}', true);
+-- @policy kb_articles "members read published articles and own drafts" deny
 select is((select count(*)::int from public.kb_articles where title = 'My draft'), 0,
   'drafts are private to the author');
 
 -- Outsider sees nothing of acme.
 select set_config('request.jwt.claims',
   '{"sub":"00000000-0000-0000-0000-00000000000d","role":"authenticated"}', true);
+-- @policy kb_articles "members read published articles and own drafts" deny
 select results_eq('select title from public.kb_articles', array['Foreign'],
   'outsider sees only own workspace articles');
 
@@ -94,11 +104,13 @@ select results_eq('select title from public.kb_articles order by title',
   array['My draft', 'Owner draft', 'Published'],
   'owner sees all articles of own workspace, including drafts');
 
+-- @policy kb_articles "authors and admins edit articles" allow
 select results_eq(
   $$with r as (update public.kb_articles set published = true where title = 'My draft' returning 1)
     select count(*)::int from r$$,
   array[1], 'owner can publish a member draft');
 
+-- @policy kb_articles "admins delete articles" allow
 select results_eq(
   $$with r as (delete from public.kb_articles where title = 'My draft' returning 1)
     select count(*)::int from r$$,

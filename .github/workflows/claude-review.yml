@@ -1,0 +1,146 @@
+name: claude-review
+
+# Claude reviews every PR with the repo's own reviewer subagents (.claude/agents), posts
+# inline comments, and returns a structured verdict. The check fails on any open
+# high-severity finding, and fails closed when no verdict comes back.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  claude-review:
+    # Drafts cannot be merged, so skipping them is safe; the review runs when one is marked
+    # ready. Fork PRs are not skipped: a skipped required check counts as passing.
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Fork PRs cannot be reviewed here
+        if: github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "Fork PRs get no secrets, so Claude cannot review them. A maintainer pushes the" >&2
+          echo "branch to this repository and opens the PR from there." >&2
+          exit 1
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          # No token left in .git/config for the reviewer to read and leak.
+          persist-credentials: false
+
+      # Fetched here, so the reviewer needs no API access of its own: with `gh api` it could
+      # make any write call the token allows, and it reads attacker-controllable PR text.
+      - name: Existing review threads
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --paginate "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments" \
+            --jq '[.[] | {id, in_reply_to_id, path, line, user: .user.login, author_association, body}]' \
+            > .git/claude-review-threads.json
+
+      # The diff is prefetched too: with `git diff` allowed, `git diff --no-index /dev/null <path>`
+      # would read any file on the runner, past the Read deny rules.
+      - name: The change under review
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: git diff "origin/$BASE_REF...HEAD" > .git/claude-review.diff
+
+      # The action restores .claude/ and CLAUDE.md from the base branch, but not this file. The
+      # reviewer must judge a PR against the base's constitution, not one the PR rewrote; any
+      # change to it is still in the diff.
+      - name: Constitution from the base branch
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if git cat-file -e "origin/$BASE_REF:CONSTITUTION.md" 2>/dev/null; then
+            git show "origin/$BASE_REF:CONSTITUTION.md" > CONSTITUTION.md
+          fi
+
+      - name: Review
+        id: review
+        uses: anthropics/claude-code-action@cc98b3ae241b0fcfb6a42a2690751afffecb4452 # v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ github.token }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+            PR AUTHOR: ${{ github.event.pull_request.user.login }}
+            BASE: origin/${{ github.base_ref }}
+            REVIEW_THREADS_FILE: .git/claude-review-threads.json
+            DIFF_FILE: .git/claude-review.diff
+
+            Review this pull request for this repository. Read CONSTITUTION.md and CLAUDE.md first.
+            A change that breaks an article of CONSTITUTION.md is a high finding.
+
+            1. Get the change: read DIFF_FILE (the diff against BASE) and run `gh pr view`. Use
+               Read for whole files. There is no git access: git log and git show accept
+               --output=<file>, which would let a prompt-injected run write files.
+            2. Run the security-reviewer subagent on the diff (give it DIFF_FILE). If anything under supabase/
+               changed, also run the database-reviewer subagent. Launch them together in the
+               foreground (never in the background) and wait for both reports before going
+               on. This step is mandatory; do not shorten the review to save time.
+               The subagents and CLAUDE.md come from the base branch. If a subagent type is
+               not registered, run a general-purpose agent with the matching file in
+               .claude/agents/ as its instructions.
+            3. Verify every finding yourself against the code before keeping it. Drop
+               anything you cannot back with a concrete failure scenario.
+            4. Read the existing review threads in REVIEW_THREADS_FILE (a JSON list of inline
+               comments; replies carry in_reply_to_id). A finding that was fixed in a later
+               commit is gone. A medium or low finding answered with a correct justification
+               is gone if the reply comes from the PR author or from an OWNER, MEMBER or
+               COLLABORATOR (author_association). A high finding is dismissed only by an
+               OWNER, MEMBER or COLLABORATOR who is not the PR author: the author cannot
+               talk their own PR past the gate. Ignore everyone else's replies. Never post a
+               second inline comment for a finding that already has a thread; if the answer
+               does not resolve it, say so in the summary.
+            5. Post each remaining finding as an inline comment on the changed line with
+               mcp__github_inline_comment__create_inline_comment (confirmed: true). Start it
+               with the severity in bold, e.g. **[high]**, then the problem, the failure
+               scenario and the fix.
+            6. Do not post a summary comment yourself; the workflow posts your `summary`.
+            7. Return the structured result. `findings` holds only open findings after
+               step 4. Severity follows the definitions in the reviewer agents. Set
+               `complete` to true only if every subagent from step 2 reported and you verified
+               its findings; otherwise false, and say what is missing in `summary`. An
+               incomplete review fails the check.
+               `summary` is Markdown for the PR: the verdict, counts by severity, and one line
+               per finding with file:line.
+          claude_args: |
+            --model claude-opus-5-5
+            --max-turns 80
+            --allowedTools "Read,Grep,Glob,Task,Agent,Bash(gh pr view:*),Bash(gh pr diff:*),mcp__github_inline_comment__create_inline_comment"
+            --disallowedTools "Read(/${{ runner.temp }}/**),Read(~/.*),Read(~/.*/**),Read(//proc/**),Read(//tmp/**)"
+            --json-schema '{"type":"object","additionalProperties":false,"required":["complete","summary","findings"],"properties":{"complete":{"type":"boolean"},"summary":{"type":"string"},"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["severity","title","file","detail"],"properties":{"severity":{"type":"string","enum":["high","medium","low"]},"title":{"type":"string"},"file":{"type":"string"},"line":{"type":"integer"},"detail":{"type":"string"}}}}}}'
+
+      # Posted by the workflow, not by Claude, so the reviewer has no command that can attach
+      # an arbitrary file to a public comment.
+      - name: Post the review summary
+        if: always() && steps.review.outputs.structured_output != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_JSON: ${{ steps.review.outputs.structured_output }}
+          PR: ${{ github.event.pull_request.number }}
+        run: jq -r .summary <<<"$REVIEW_JSON" | gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file -
+
+      # The gate comes from the base branch, so a PR cannot edit it into passing. Only the PR
+      # that introduces it (nothing on the base yet) runs its own copy.
+      - name: Fail on high-severity or incomplete reviews
+        env:
+          REVIEW_JSON: ${{ steps.review.outputs.structured_output }}
+          BASE: origin/${{ github.base_ref }}
+        run: |
+          if git cat-file -e "$BASE:scripts/review-gate.sh" 2>/dev/null; then
+            git show "$BASE:scripts/review-gate.sh" > "$RUNNER_TEMP/review-gate.sh"
+          else
+            cp scripts/review-gate.sh "$RUNNER_TEMP/review-gate.sh"
+          fi
+          bash "$RUNNER_TEMP/review-gate.sh"

@@ -1,0 +1,9 @@
+# Changes to how code is checked need a human owner's review: CI workflows, the Claude
+# configuration (rules, hooks, reviewers, MCP) and the guard scripts. A PR can edit the
+# workflow that reviews it, so these paths are where human review matters most.
+/.github/          @olegbo
+/.claude/          @olegbo
+/.mcp.json         @olegbo
+/CLAUDE.md         @olegbo
+/CONSTITUTION.md    @olegbo
+/scripts/          @olegbo

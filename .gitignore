@@ -1,0 +1,8 @@
+# Secrets never enter the repo. .env.example holds the local, non-secret values.
+.env
+.env.*
+!.env.example
+
+# Per-developer Claude Code state
+.claude/settings.local.json
+.claude/.state/

@@ -5,7 +5,7 @@
 -- (the same statement by an authorized role touching exactly one row).
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(48);
+select plan(50);
 
 -- Fixtures (run as postgres, RLS does not apply) ------------------------------
 --   a owner, b admin, f admin, c member, g member, h member  -> acme
@@ -94,9 +94,11 @@ set local role authenticated;
 select set_config('request.jwt.claims',
   '{"sub":"00000000-0000-0000-0000-00000000000c","role":"authenticated"}', true);
 
+-- @policy workspaces "members read their workspaces" allow
 select results_eq('select slug from public.workspaces', array['acme'],
   'member sees only own workspace');
 
+-- @policy workspace_members "members read co-members" allow
 select results_eq(
   'select user_id::text from public.workspace_members order by user_id',
   array[
@@ -107,25 +109,31 @@ select results_eq(
   'member sees exactly the members of own workspace'
 );
 
+-- @policy workspace_invites "admins read invites" deny
 select is((select count(*)::int from public.workspace_invites), 0,
   'member cannot see invites (acme has one, checked as admin below)');
 
+-- @policy workspace_invites "admins invite lower roles" deny
 select throws_ok(
   $$insert into public.workspace_invites (workspace_id, email, token_hash)
     values ('10000000-0000-0000-0000-000000000001', 'new@example.test', repeat('c', 64))$$,
-  '42501', null, 'member cannot invite');
+  '42501', 'new row violates row-level security policy for table "workspace_invites"',
+  'member cannot invite');
 
+-- @policy workspaces "admins rename workspaces" deny
 select results_eq(
   $$with r as (update public.workspaces set name = 'Hacked' where slug = 'acme' returning 1)
     select count(*)::int from r$$,
   array[0], 'member cannot rename workspace');
 
+-- @policy workspace_members "owners change roles" deny
 select results_eq(
   $$with r as (update public.workspace_members set role = 'admin'
                where user_id = '00000000-0000-0000-0000-00000000000c' returning 1)
     select count(*)::int from r$$,
   array[0], 'member cannot promote self');
 
+-- @policy workspace_members "members leave, managers remove lower roles" deny
 select results_eq(
   $$with r as (delete from public.workspace_members
                where user_id = '00000000-0000-0000-0000-0000000000c2' returning 1)
@@ -135,9 +143,24 @@ select results_eq(
 select throws_ok($$insert into public.workspaces (name, slug) values ('Direct', 'direct')$$,
   '42501', null, 'direct workspace insert is not allowed');
 
+-- Outsider (owner of another workspace) ----------------------------------------
+select set_config('request.jwt.claims',
+  '{"sub":"00000000-0000-0000-0000-00000000000d","role":"authenticated"}', true);
+
+-- @policy workspaces "members read their workspaces" deny
+select results_eq('select slug from public.workspaces', array['other'],
+  'outsider sees only own workspace, not acme');
+
+-- @policy workspace_members "members read co-members" deny
+select is(
+  (select count(*)::int from public.workspace_members
+   where workspace_id = '10000000-0000-0000-0000-000000000001'),
+  0, 'outsider sees no members of a foreign workspace');
+
 -- Member h leaves.
 select set_config('request.jwt.claims',
   '{"sub":"00000000-0000-0000-0000-0000000000c3","role":"authenticated"}', true);
+-- @policy workspace_members "members leave, managers remove lower roles" allow
 select results_eq(
   $$with r as (delete from public.workspace_members
                where user_id = '00000000-0000-0000-0000-0000000000c3' returning 1)
@@ -148,21 +171,27 @@ select results_eq(
 select set_config('request.jwt.claims',
   '{"sub":"00000000-0000-0000-0000-00000000000b","role":"authenticated"}', true);
 
+-- @policy workspace_invites "admins invite lower roles" allow
 select lives_ok(
   $$insert into public.workspace_invites (workspace_id, email, token_hash)
     values ('10000000-0000-0000-0000-000000000001', 'new@example.test', repeat('c', 64))$$,
   'admin can invite a member');
 
+-- @policy workspace_invites "admins invite lower roles" deny
 select throws_ok(
   $$insert into public.workspace_invites (workspace_id, email, role, token_hash)
     values ('10000000-0000-0000-0000-000000000001', 'boss@example.test', 'admin', repeat('d', 64))$$,
-  '42501', null, 'admin cannot invite an admin');
+  '42501', 'new row violates row-level security policy for table "workspace_invites"',
+  'admin cannot invite an admin');
 
+-- @policy workspace_invites "admins invite lower roles" deny
 select throws_ok(
   $$insert into public.workspace_invites (workspace_id, email, token_hash)
     values ('10000000-0000-0000-0000-000000000002', 'new@example.test', repeat('e', 64))$$,
-  '42501', null, 'admin cannot invite to a foreign workspace');
+  '42501', 'new row violates row-level security policy for table "workspace_invites"',
+  'admin cannot invite to a foreign workspace');
 
+-- Column grant, not policy: invited_by is not insertable.
 select throws_ok(
   $$insert into public.workspace_invites (workspace_id, email, token_hash, invited_by)
     values ('10000000-0000-0000-0000-000000000001', 'spoof@example.test', repeat('f', 64),
@@ -172,35 +201,41 @@ select throws_ok(
 select throws_ok('select token_hash from public.workspace_invites', '42501', null,
   'token_hash is not readable by clients');
 
+-- @policy workspace_invites "admins read invites" allow
 select results_eq(
   'select email::text from public.workspace_invites order by email',
   array['first@example.test', 'new@example.test'],
   'admin sees exactly the invites of own workspace');
 
+-- @policy workspace_members "owners change roles" deny
 select results_eq(
   $$with r as (update public.workspace_members set role = 'admin'
                where user_id = '00000000-0000-0000-0000-00000000000c' returning 1)
     select count(*)::int from r$$,
   array[0], 'admin cannot change roles');
 
+-- @policy workspace_members "members leave, managers remove lower roles" deny
 select results_eq(
   $$with r as (delete from public.workspace_members
                where user_id = '00000000-0000-0000-0000-00000000000f' returning 1)
     select count(*)::int from r$$,
   array[0], 'admin cannot remove another admin');
 
+-- @policy workspace_members "members leave, managers remove lower roles" deny
 select results_eq(
   $$with r as (delete from public.workspace_members
                where user_id = '00000000-0000-0000-0000-00000000000a' returning 1)
     select count(*)::int from r$$,
   array[0], 'admin cannot remove the owner');
 
+-- @policy workspace_members "members leave, managers remove lower roles" allow
 select results_eq(
   $$with r as (delete from public.workspace_members
                where user_id = '00000000-0000-0000-0000-0000000000c2' returning 1)
     select count(*)::int from r$$,
   array[1], 'admin can remove a member');
 
+-- @policy workspaces "admins rename workspaces" allow
 select results_eq(
   $$with r as (update public.workspaces set name = 'Acme Inc' where slug = 'acme' returning 1)
     select count(*)::int from r$$,
@@ -209,6 +244,7 @@ select results_eq(
 select throws_ok($$update public.workspaces set slug = 'renamed' where slug = 'acme'$$,
   '42501', null, 'slug is not updatable by clients');
 
+-- @policy workspaces "owners delete workspaces" deny
 select results_eq(
   $$with r as (delete from public.workspaces where slug = 'acme' returning 1)
     select count(*)::int from r$$,
@@ -223,11 +259,13 @@ select throws_ok(
     values ('10000000-0000-0000-0000-000000000001', 'boss@example.test', 'owner', repeat('1', 64))$$,
   '23514', null, 'invites cannot grant ownership');
 
+-- @policy workspace_invites "admins invite lower roles" allow
 select lives_ok(
   $$insert into public.workspace_invites (workspace_id, email, role, token_hash)
     values ('10000000-0000-0000-0000-000000000001', 'boss@example.test', 'admin', repeat('2', 64))$$,
   'owner can invite an admin');
 
+-- @policy workspace_members "owners change roles" allow
 select results_eq(
   $$with r as (update public.workspace_members set role = 'member'
                where user_id = '00000000-0000-0000-0000-00000000000f' returning 1)
@@ -243,6 +281,7 @@ select throws_ok(
     where user_id = '00000000-0000-0000-0000-00000000000a'$$,
   'PT409', 'workspace must keep at least one owner', 'last owner cannot demote self');
 
+-- @policy workspace_members "owners change roles" allow
 select results_eq(
   $$with r as (update public.workspace_members set role = 'owner'
                where user_id = '00000000-0000-0000-0000-00000000000b' returning 1)
