@@ -131,7 +131,15 @@ This repository is set up for work with Claude Code. The agent gets written rule
 
 ### Limits of the guard rails
 
-- The hooks are guard rails for the agent, not a sandbox. They read commands word by word, so a value hidden in a variable, brace expansion, a here-document or a git alias can get past them, as can a recursive `grep` over the working tree. They also refuse some harmless commands whose text only looks dangerous. What matters is enforced again on the server: branch protection, the required checks, and credentials for hosted projects that exist only in CI.
+- The hooks are guard rails for the agent, not a sandbox. They read commands word by word and refuse what they recognise; they cannot see what a command does once it runs. Known ways past them:
+  - a value hidden in a variable (including `PGHOST` or a psql service file pointing at a remote database), brace expansion, a here-document, a git alias, or a `git -c` setting that runs a command;
+  - code run by an interpreter (`python -c`, `node -e`), by a script, or by a psql meta-command (`\!`); only `.env` paths are looked for inside inline code;
+  - commands that rewrite files without naming them: switching branches, merging, rebasing, cherry-picking, applying a patch or extracting an archive. `git reset --hard`, `git clean` and `git stash` without paths are refused;
+  - a path through a directory that does not exist (`x/../.claude/settings.json`), and a Grep or Glob pattern that matches `.env` without spelling it out;
+  - a recursive `grep` over the working tree, which reads `.env` files along with everything else.
+- The Stop hook lets a second stop through after a failing check when no migration or function code changed (the red step of test-first work), even if the change was to tooling.
+- They also refuse some harmless commands whose text only looks dangerous.
+- What matters is enforced again where the agent cannot reach: branch protection, the required checks, code-owner review, and credentials for hosted projects that exist only in CI. A real boundary on the machine itself would be an OS-level sandbox that denies writes to the guard rails.
 - GitHub runs a pull request's own copy of the workflow, so a pull request could change the review job itself. [`.github/CODEOWNERS`](.github/CODEOWNERS) names an owner for CI, the Claude configuration, the constitution and the guard scripts, and code-owner review makes such changes need that owner's approval.
 
 ## Running it
