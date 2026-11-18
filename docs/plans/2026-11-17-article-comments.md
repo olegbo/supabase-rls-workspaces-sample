@@ -315,7 +315,7 @@ As postgres: `update kb_articles set published = false where id = art01`. Then a
 50. comments go with their article (`delete from kb_articles where id = art01`): `is(count where article_id = art01, 0)`, untagged
 51. comments go with the workspace (`delete from workspaces where id = w2`): `is(count where body = 'foreign comment', 0)`, untagged
 
-**Quota** (as postgres, with `created_by = b3` written out because `request.jwt.claims` set earlier in the transaction still applies: insert 50 b3 comments on art05 at `now() - interval '61 minutes'`, one at exactly `now() - interval '1 hour'`, then 99 at `now() - interval '30 minutes'`; as b3)
+**Quota** (as postgres, with `created_by = b3` written out because `request.jwt.claims` set earlier in the transaction still applies: insert 50 b3 comments on art05 at `now() - interval '61 minutes'`, one at exactly `now() - interval '1 hour'`, then 99 inside the window: one at `now() - interval '1 hour' + interval '1 second'` (pins the inner edge: a narrower window would miss it) and 98 at `now() - interval '30 minutes'`; as b3)
 
 52. a two-row insert at 99 is refused as a whole (a PostgREST bulk POST is one multi-row INSERT): `throws_ok(insert ... select ... from generate_series(1, 2), 'PT429', 'comment rate limit exceeded')`, untagged. The row trigger sees rows inserted earlier in the same statement because the function is volatile; marked `stable`, it would let both through. Assertion 53 then shows neither row was kept.
 53. b3's 100th comment within an hour is accepted: `lives_ok`, untagged. Hits the trigger's return branch.

@@ -415,8 +415,9 @@ select is((select count(*)::int from public.kb_article_comments where body = 'fo
 -- Quota: 100 comments per user per rolling hour --------------------------------
 -- 99 comments inside the window and 51 just outside it: 50 at 61 minutes, one at exactly an
 -- hour (the window is `created_at > now() - 1 hour`). A wider window, or `>=`, would count
--- them and refuse the 100th comment below. The author is written out: the JWT claims set
--- above still apply to inserts as postgres.
+-- them and refuse the 100th comment below. One of the 99 sits one second inside the edge:
+-- a narrower window would miss it and let the 101st comment through. The author is
+-- written out: the JWT claims set above still apply to inserts as postgres.
 insert into public.kb_article_comments (workspace_id, article_id, body, created_by, created_at)
 select '10000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000005', 'old ' || g,
        '00000000-0000-0000-0000-0000000000b3', now() - interval '61 minutes'
@@ -427,9 +428,13 @@ values ('10000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-0000000
         '00000000-0000-0000-0000-0000000000b3', now() - interval '1 hour');
 
 insert into public.kb_article_comments (workspace_id, article_id, body, created_by, created_at)
+values ('10000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000005', 'inner edge',
+        '00000000-0000-0000-0000-0000000000b3', now() - interval '1 hour' + interval '1 second');
+
+insert into public.kb_article_comments (workspace_id, article_id, body, created_by, created_at)
 select '10000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000005', 'recent ' || g,
        '00000000-0000-0000-0000-0000000000b3', now() - interval '30 minutes'
-from generate_series(1, 99) g;
+from generate_series(1, 98) g;
 
 set local role authenticated;
 select set_config('request.jwt.claims',
