@@ -8,9 +8,10 @@ Contents:
 |---|---|
 | Migration: workspaces, roles, invites, account deletion | `supabase/migrations/20261110120000_workspaces_rbac.sql` |
 | Migration: workspace-scoped articles | `supabase/migrations/20261110120100_kb_articles.sql` |
+| Migration: comments on articles | `supabase/migrations/20261117120000_kb_article_comments.sql` |
 | Edge Function: `invite-member` | `supabase/functions/invite-member/` |
-| Database tests (pgTAP, 129 assertions incl. a plan regression test and edge cases) | `supabase/tests/database/` |
-| Concurrency and auth-config tests (Deno, 5) | `supabase/tests/deno/` |
+| Database tests (pgTAP, 189 assertions incl. a plan regression test and edge cases) | `supabase/tests/database/` |
+| Concurrency and auth-config tests (Deno, 6) | `supabase/tests/deno/` |
 | Function tests (36): handler, config, adapters against the live stack, end to end | `supabase/functions/invite-member/*.test.ts` |
 | Coverage gates | `scripts/plpgsql-coverage.sh`, `scripts/ts-coverage.sh` |
 | CI | `.github/workflows/ci.yml` |
@@ -19,7 +20,7 @@ Contents:
 ## Data model and roles
 
 ```
-auth.users ──< workspace_members >── workspaces ──< kb_articles
+auth.users ──< workspace_members >── workspaces ──< kb_articles ──< kb_article_comments
                   role: member | admin | owner        └─< workspace_invites
 ```
 
@@ -29,7 +30,9 @@ The hierarchy is strict: you manage only roles below your own.
 |---|:-:|:-:|:-:|
 | Read the workspace and its members | ✓ | ✓ | ✓ |
 | Read published articles and own drafts, write own articles | ✓ | ✓ | ✓ |
+| Read and write comments on articles you can read, edit or delete own comments | ✓ | ✓ | ✓ |
 | Read all drafts, edit or delete any article | | ✓ | ✓ |
+| Delete any comment (moderation; nobody edits another person's comment) | | ✓ | ✓ |
 | Rename the workspace | | ✓ | ✓ |
 | Invite members, revoke invites, remove members | | ✓ | ✓ |
 | Invite admins, change roles, remove admins and owners | | | ✓ |
@@ -50,7 +53,13 @@ The hierarchy is strict: you manage only roles below your own.
   - The inviter must still hold a role above the invited one when the invite is accepted. An admin removed after inviting can't leave a working invite behind.
   - Every failure returns the same error, so the endpoint can't be used to probe for tokens.
   - An expired invite no longer blocks re-inviting the same address.
-- **Quotas.** Each user can send 20 invites per hour, each workspace can have 100 pending invites, and each user can create 10 workspaces. Signup and email rates use Supabase's `[auth.rate_limit]`.
+- **Comments.**
+  - A comment is visible exactly when its article is: the policy checks `exists (select 1 from kb_articles ...)`, which runs under the reader's own `kb_articles` RLS, so the article rule is reused, not copied. Unpublishing an article hides its comments, the author's included.
+  - A composite foreign key `(article_id, workspace_id)` to `kb_articles (id, workspace_id)` makes a comment's workspace equal its article's for every writer, the service role included. The stored `workspace_id` lets the policies use the index.
+  - Comments go with their article and workspace; they stay, without an author, when the account is deleted.
+  - Authors edit and delete their own comments only while they can read the article, so unpublishing an article freezes its comments for their authors. Admins can still delete them. Both policies check the article themselves: a statement with no `WHERE` does not bring in the read policy.
+  - Bodies are plain text, 1 to 4000 characters, not only whitespace. Clients must render them as text, never as HTML.
+- **Quotas.** Each user can send 20 invites per hour, each workspace can have 100 pending invites, each user can create 10 workspaces, and each user can have at most 100 comments from the last hour across all workspaces (deleting one frees its place; edits are not limited). Signup and email rates use Supabase's `[auth.rate_limit]`.
 - **Auth config is part of the security model.** Invites trust `email_confirmed_at`, which means nothing if Supabase confirms every signup on its own. `enable_confirmations = true` is committed, and a test fails if it is turned off. Anonymous sign-ins are off, and passwords need 8 characters.
 - **The Edge Function holds no privileges.** `invite-member` runs with the caller's JWT, never the service role, so RLS decides whether the caller may invite.
   - It authenticates before reading the body.
@@ -68,18 +77,18 @@ CI fails below 100%, and both gates have been checked to fail when a test is rem
 
 | Layer | Measured with | Statements / lines | Branches |
 |---|---|---|---|
-| PL/pgSQL functions and triggers (6) | `plpgsql_check` profiler while pgTAP and the Deno DB tests run | 100% | 100% |
+| PL/pgSQL functions and triggers (7) | `plpgsql_check` profiler while pgTAP and the Deno DB tests run | 100% | 100% |
 | Edge Function modules (`handler.ts`, `config.ts`, `adapters.ts`) | `deno test --coverage` | 100% | 100% |
-| RLS policies (13) | not measurable by tools; every policy has at least one allowed and one denied case | 13 / 13 | allow and deny |
+| RLS policies (17) | not measurable by tools; `scripts/check-rls-coverage.sh` requires a tagged allowed and denied case for every policy | 17 / 17 | allow and deny |
 
 `index.ts` only passes config to `Deno.serve`. The end-to-end test exercises it inside the edge runtime, where coverage can't be collected. A source file that no test imports would be missing from Deno's report instead of showing 0%, so `ts-coverage.sh` requires each module by name.
 
 Edge cases covered, besides the role matrix:
 - **Identity:** a JWT without `sub`, the anon and service-role keys, a validly signed token with a user `sub` but a non-user role, expired, tampered and garbage tokens, anonymous and unconfirmed users.
 - **Input bounds:** name, slug, email, title and body lengths, exactly at and one past each limit; slug format and reserved words; the `token_hash` format; non-object and empty JSON bodies; extra fields smuggled into the request body; tokens that need URL encoding.
-- **Quotas:** invites per hour, pending invites per workspace, workspaces per user.
+- **Quotas:** invites per hour, pending invites per workspace, workspaces per user, comments per hour.
 - **Lifecycle:** invite revocation by each role; invites from removed, demoted or deleted inviters; workspace deletion cascading to members, invites and articles; account deletion with and without a co-owner, admin-over-member succession, and users owning several workspaces.
-- **Concurrency:** two owners stepping down at once; bulk demotion in one statement; refusal under `REPEATABLE READ`.
+- **Concurrency:** two owners stepping down at once; two comments at the quota edge at once; bulk demotion in one statement; refusal under `REPEATABLE READ`.
 - **Failure modes:** the auth server or database unreachable from the function, email provider errors and timeouts. All return a JSON error with CORS headers and no internal details.
 
 ## Pitfalls

@@ -4,7 +4,7 @@
 -- use a BitmapOr over the workspace_id index.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(4);
+select plan(7);
 
 create schema tests;
 create function tests.plan_of(query text)
@@ -42,7 +42,11 @@ insert into public.kb_articles (workspace_id, title, published)
 select ('10000000-0000-0000-0000-' || lpad(to_hex(1 + g % 5000), 12, '0'))::uuid, 'A' || g, g % 3 = 0
 from generate_series(1, 100000) g;
 
-analyze public.workspaces, public.workspace_members, public.kb_articles;
+-- One comment per article. Inserted without a JWT, so the quota trigger returns at once.
+insert into public.kb_article_comments (workspace_id, article_id, body)
+select workspace_id, id, 'C' from public.kb_articles;
+
+analyze public.workspaces, public.workspace_members, public.kb_articles, public.kb_article_comments;
 
 set local role authenticated;
 select set_config('request.jwt.claims',
@@ -64,6 +68,30 @@ select doesnt_match(
   tests.plan_of('select id from public.workspaces'),
   'Seq Scan on workspaces',
   'workspace list does not scan the whole table'
+);
+
+-- Comments inherit article visibility through a nested exists on kb_articles, whose own
+-- OR-ed policy could tempt the planner into a hash semi-join over a full scan.
+select doesnt_match(
+  tests.plan_of(format(
+    'select id from public.kb_article_comments where article_id = %L order by created_at limit 50',
+    (select id from public.kb_articles where published limit 1))),
+  'Seq Scan on kb_article_comments',
+  'one article''s comments are listed without scanning the whole table'
+);
+
+select doesnt_match(
+  tests.plan_of('select id from public.kb_article_comments order by created_at desc limit 20'),
+  'Seq Scan on kb_article(s|_comments)',
+  'unfiltered comment list scans neither comments nor articles in full'
+);
+
+-- One comment per article: visible comments must match visible articles, which also
+-- proves comments on hidden drafts stay hidden.
+select is(
+  (select count(*)::int from public.kb_article_comments),
+  (select count(*)::int from public.kb_articles),
+  'visible comments match visible articles'
 );
 
 -- Sanity check that the data is visible, so the plans above are not trivially empty.
